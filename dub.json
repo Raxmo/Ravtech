@@ -1,0 +1,19 @@
+{
+	"authors": [""],
+	"copyright": "Copyright © 2025",
+	"description": "Ravtech - D-based graphics and audio project",
+	"license": "MIT",
+	"name": "ravtech",
+	"targetPath": "bin",
+	"targetType": "executable",
+	"dependencies": {
+		"bindbc-glfw": "~>3.4",
+		"bindbc-opengl": "~>1.2",
+		"bindbc-openal": "~>1.0"
+	},
+	"subConfigurations": {
+		"bindbc-glfw": "dynamicBC",
+		"bindbc-opengl": "dynamicBC",
+		"bindbc-openal": "dynamicBC"
+	}
+}
