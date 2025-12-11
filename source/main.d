@@ -26,26 +26,4 @@ int main()
 
 	return 0;
 }
-/*
 
-dt = getDt();
-
-const pdt = 6000ns;
-pct = 0ns;
-
-fixedPhysics(dt)
-{
-	while((pct += pdt) < dt)
-	{
-		physics(pdt);
-	}
-	pct -= dt
-}
-
-DoRender();
-
-
-
-
-
-	*/
