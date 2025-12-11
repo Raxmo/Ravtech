@@ -7,9 +7,9 @@
 	"targetPath": "bin",
 	"targetType": "executable",
 	"dependencies": {
-		"bindbc-glfw": "~>3.4",
-		"bindbc-opengl": "~>1.2",
-		"bindbc-openal": "~>1.0"
+		"bindbc-glfw": "~>1.1",
+		"bindbc-opengl": "~>1.1",
+		"bindbc-openal": "~>1.1"
 	},
 	"subConfigurations": {
 		"bindbc-glfw": "dynamicBC",
