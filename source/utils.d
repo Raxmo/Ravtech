@@ -2,7 +2,7 @@ import core.time;
 import std.math;
 import std.stdio;
 
-private immutable double PI = 3.141592653589793;
+private immutable double PI = 0x1.921fb54442d18p1;  // IEEE 754 double-precision π
 
 class Random
 {
@@ -14,8 +14,6 @@ class Random
 	static immutable long MANTISSA_MASK = (1L << 52) - 1;  // 52 bits of mantissa
 
 	private long state = 0;
-	private double cachedNormal = 0;
-	private bool hasCache = false;
 
 	this()
 	{
@@ -85,41 +83,26 @@ class Random
 		return min + cast(T)(next() % range);
 	}
 
-	// Box-Muller normal distribution with output caching
+	// Box-Muller normal distribution (no caching for consistent cost)
 	double normal(double mean = 0.0, double stddev = 1.0) @nogc nothrow pure
 	{
-		if (hasCache) {
-			hasCache = false;
-			return mean + stddev * cachedNormal;
-		}
-		
 		double u1 = randDouble();
 		double u2 = randDouble();
 		double r = sqrt(-2.0 * log(u1));
 		double theta = 2.0 * PI * u2;
-		
-		cachedNormal = r * sin(theta);
-		hasCache = true;
 		
 		return mean + stddev * r * cos(theta);
 	}
 
 	private long next() @nogc nothrow pure
 	{
-		// SplitMix64 variant for better entropy
+		// SplitMix64 with full mixing
 		state += GOLDEN_RATIO;
 		long x = state;
 		x = (x ^ (x >> 30)) * MULT_A;
 		x = x ^ (x >> 27);
+		x = x * MULT_B;
+		x = x ^ (x >> 33);
 		return x;
 	}
 }
-
-
-
-
-
-
-
-
-

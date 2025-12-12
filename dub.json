@@ -15,5 +15,16 @@
 		"bindbc-glfw": "dynamicBC",
 		"bindbc-opengl": "dynamicBC",
 		"bindbc-openal": "dynamicBC"
-	}
+	},
+	"configurations": [
+		{
+			"name": "app",
+			"targetType": "executable"
+		},
+		{
+			"name": "benchmark",
+			"targetType": "executable",
+			"excludedSourceFiles": ["source/main.d", "source/app.d", "source/input.d"]
+		}
+	]
 }
