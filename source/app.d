@@ -1,6 +1,7 @@
 import bindbc.glfw;
 import bindbc.opengl;
 import std.stdio;
+import window;
 
 static class App
 {
@@ -37,7 +38,11 @@ static class App
 
 	static Window createWindow(int width, int height, string title)
 	{
-		auto window = new Window(width, height, title);
+		auto window = new Window()
+			.setWidth(width)
+			.setHeight(height)
+			.setTitle(title)
+			.Create();
 		windows ~= window;
 		return window;
 	}
@@ -78,73 +83,5 @@ static class App
 		}
 		windows = [];
 		glfwTerminate();
-	}
-}
-
-class Window
-{
-	private GLFWwindow* handle;
-	private int width;
-	private int height;
-	private string title;
-
-	this(int w, int h, string t)
-	{
-		width = w;
-		height = h;
-		title = t;
-
-		handle = glfwCreateWindow(width, height, title.ptr, null, null);
-		if (!handle)
-		{
-			throw new Exception("Failed to create GLFW window");
-		}
-
-		glfwMakeContextCurrent(handle);
-
-		// Load OpenGL
-		GLSupport retVal = loadOpenGL();
-		if (retVal == GLSupport.noLibrary)
-		{
-			throw new Exception("OpenGL library not found");
-		}
-		else if (retVal == GLSupport.badLibrary)
-		{
-			throw new Exception("OpenGL library is broken");
-		}
-
-		glClearColor(0.75f, 0.4f, 0.2f, 1.0f);
-		writeln("Window created: ", title);
-	}
-
-	void update(double deltaTime)
-	{
-		glfwPollEvents();
-	}
-
-	void render()
-	{
-		glfwMakeContextCurrent(handle);
-		glClear(GL_COLOR_BUFFER_BIT);
-		glfwSwapBuffers(handle);
-	}
-
-	bool isOpen()
-	{
-		return !glfwWindowShouldClose(handle);
-	}
-
-	void destroy()
-	{
-		if (handle)
-		{
-			glfwDestroyWindow(handle);
-			handle = null;
-		}
-	}
-
-	GLFWwindow* getHandle()
-	{
-		return handle;
 	}
 }
