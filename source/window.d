@@ -73,7 +73,7 @@ class Window
 		glfwSwapBuffers(handle);
 	}
 
-	bool isOpen()
+	@property bool isOpen()
 	{
 		return !glfwWindowShouldClose(handle);
 	}
