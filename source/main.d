@@ -1,4 +1,5 @@
 import app;
+import window;
 import utils;
 import std.stdio;
 
@@ -9,7 +10,11 @@ int main()
 	try
 	{
 		App.initialize();
-		App.createWindow(800, 600, "Ravtech");
+		App.windows ~= new Window()
+			.setWidth(800)
+			.setHeight(600)
+			.setTitle("Ravtech")
+			.Create();
 
 		while (App.shouldRun())
 		{

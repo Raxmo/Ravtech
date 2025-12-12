@@ -5,7 +5,7 @@ import window;
 
 static class App
 {
-	private static Window[] windows;
+	static Window[] windows;
 	private static bool isRunning = false;
 
 	static void initialize()
@@ -34,17 +34,6 @@ static class App
 		}
 
 		isRunning = true;
-	}
-
-	static Window createWindow(int width, int height, string title)
-	{
-		auto window = new Window()
-			.setWidth(width)
-			.setHeight(height)
-			.setTitle(title)
-			.Create();
-		windows ~= window;
-		return window;
 	}
 
 	static void update(double deltaTime)
