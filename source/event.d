@@ -1,5 +1,7 @@
 import core.thread;
 import core.time;
+import core.sync.mutex;
+import core.sync.condition;
 import std.variant;
 import std.algorithm : filter;
 import std.array : array;

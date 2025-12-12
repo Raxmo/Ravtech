@@ -6,20 +6,18 @@ int main()
 {
 	writeln();
 
-	App app = new App();
-
 	try
 	{
-		app.initialize();
+		App.initialize();
+		App.createWindow(800, 600, "Ravtech");
 
-		while (app.shouldRun())
+		while (App.shouldRun())
 		{
-			app.handleInput();
-			app.update(0.016);  // ~60 FPS deltaTime
-			app.render();
+			App.update(0.016);  // ~60 FPS deltaTime
+			App.render();
 		}
 
-		app.shutdown();
+		App.shutdown();
 	}
 	catch (Exception e)
 	{

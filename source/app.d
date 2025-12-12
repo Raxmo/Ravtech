@@ -2,16 +2,12 @@ import bindbc.glfw;
 import bindbc.opengl;
 import std.stdio;
 
-class App
+static class App
 {
-	GLFWwindow* window; // <-- will be changed to a window manager at some point
+	private static Window[] windows;
+	private static bool isRunning = false;
 
-	this()
-	{
-		// Initialize app
-	}
-	
-	void initialize()
+	static void initialize()
 	{
 		// Load GLFW
 		GLFWSupport retVal = loadGLFW();
@@ -36,66 +32,119 @@ class App
 			throw new Exception("Failed to initialize GLFW");
 		}
 
-		// Create a windowed mode window and its OpenGL context
-		window = glfwCreateWindow(800, 600, "Ravtech", null, null);
-		if (!window)
+		isRunning = true;
+	}
+
+	static Window createWindow(int width, int height, string title)
+	{
+		auto window = new Window(width, height, title);
+		windows ~= window;
+		return window;
+	}
+
+	static void update(double deltaTime)
+	{
+		foreach (window; windows)
 		{
-			writeln("Error: Failed to create GLFW window");
-			glfwTerminate();
+			if (window.isOpen())
+			{
+				window.update(deltaTime);
+			}
+		}
+	}
+
+	static void render()
+	{
+		foreach (window; windows)
+		{
+			if (window.isOpen())
+			{
+				window.render();
+			}
+		}
+	}
+
+	static bool shouldRun()
+	{
+		return isRunning && windows.length > 0;
+	}
+
+	static void shutdown()
+	{
+		isRunning = false;
+		foreach (window; windows)
+		{
+			window.destroy();
+		}
+		windows = [];
+		glfwTerminate();
+	}
+}
+
+class Window
+{
+	private GLFWwindow* handle;
+	private int width;
+	private int height;
+	private string title;
+
+	this(int w, int h, string t)
+	{
+		width = w;
+		height = h;
+		title = t;
+
+		handle = glfwCreateWindow(width, height, title.ptr, null, null);
+		if (!handle)
+		{
 			throw new Exception("Failed to create GLFW window");
 		}
 
-		// Make the window's context current
-		glfwMakeContextCurrent(window);
+		glfwMakeContextCurrent(handle);
 
 		// Load OpenGL
-		GLSupport retVal2 = loadOpenGL();
-		if (retVal2 == GLSupport.noLibrary)
+		GLSupport retVal = loadOpenGL();
+		if (retVal == GLSupport.noLibrary)
 		{
-			writeln("Error: OpenGL library not found!");
 			throw new Exception("OpenGL library not found");
 		}
-		else if (retVal2 == GLSupport.badLibrary)
+		else if (retVal == GLSupport.badLibrary)
 		{
-			writeln("Error: OpenGL library is broken!");
 			throw new Exception("OpenGL library is broken");
 		}
 
 		glClearColor(0.75f, 0.4f, 0.2f, 1.0f);
-
-
-		writeln("Window created successfully");
+		writeln("Window created: ", title);
 	}
 
 	void update(double deltaTime)
 	{
-		// Update game state
+		glfwPollEvents();
 	}
 
 	void render()
 	{
+		glfwMakeContextCurrent(handle);
 		glClear(GL_COLOR_BUFFER_BIT);
-		// Render frame
-		glfwSwapBuffers(window);
+		glfwSwapBuffers(handle);
 	}
 
-	bool shouldRun()
+	bool isOpen()
 	{
-		return !glfwWindowShouldClose(window);
+		return !glfwWindowShouldClose(handle);
 	}
 
-	void handleInput()
+	void destroy()
 	{
-		glfwPollEvents();
-	}
-
-	void shutdown()
-	{
-		// Cleanup
-		if (window)
+		if (handle)
 		{
-			glfwDestroyWindow(window);
+			glfwDestroyWindow(handle);
+			handle = null;
 		}
-		glfwTerminate();
+	}
+
+	GLFWwindow* getHandle()
+	{
+		return handle;
 	}
 }

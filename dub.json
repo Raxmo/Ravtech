@@ -19,7 +19,8 @@
 	"configurations": [
 		{
 			"name": "app",
-			"targetType": "executable"
+			"targetType": "executable",
+			"excludedSourceFiles": ["source/benchmark.d"]
 		},
 		{
 			"name": "benchmark",
