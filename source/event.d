@@ -63,7 +63,7 @@ class EventScheduler
 
 	private long getCurrentTimeNs()
 	{
-		return MonoTime.currTime().total!"nsecs";
+		return MonoTime.currTime().ticks();
 	}
 }
 
@@ -74,7 +74,7 @@ class ThreadSafeInputQueue
 	private struct QueuedInput
 	{
 		void delegate() action;
-		double timestamp;
+		long timestamp;
 	}
 
 	private Mutex lock;
@@ -85,7 +85,7 @@ class ThreadSafeInputQueue
 		lock = new Mutex();
 	}
 
-	void push(void delegate() action, double timestamp)
+	void push(void delegate() action, long timestamp)
 	{
 		synchronized(lock)
 		{

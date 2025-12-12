@@ -1,8 +1,13 @@
 import app;
+import utils;
 import std.stdio;
 
 int main()
 {
+	// Test random distribution
+	testRandomDistribution();
+	writeln("\n");
+
 	App app = new App();
 
 	try

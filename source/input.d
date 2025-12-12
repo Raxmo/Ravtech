@@ -51,28 +51,31 @@ class InputThread
 	void setupCallbacks()
 	{
 		// Key input callback
-		glfwSetKeyCallback(window, (window, key, scancode, action, mods) {
-			double timestamp = MonoTime.currTime().total!"nsecs" / 1_000_000_000.0;
-			inputQueue.push(() {
+		auto keyCallback = (GLFWwindow* w, int key, int scancode, int action, int mods) {
+			long timestamp = MonoTime.currTime().ticks();
+			this.inputQueue.push(() {
 				// Handle key input (placeholder)
 				// writeln("Key: ", key, " Action: ", action);
 			}, timestamp);
-		});
+		};
+		glfwSetKeyCallback(window, cast(GLFWkeyfun)keyCallback);
 
 		// Mouse button callback
-		glfwSetMouseButtonCallback(window, (window, button, action, mods) {
-			double timestamp = MonoTime.currTime().total!"nsecs" / 1_000_000_000.0;
-			inputQueue.push(() {
+		auto mouseCallback = (GLFWwindow* w, int button, int action, int mods) {
+			long timestamp = MonoTime.currTime().ticks();
+			this.inputQueue.push(() {
 				// Handle mouse input (placeholder)
 				// writeln("Mouse button: ", button, " Action: ", action);
 			}, timestamp);
-		});
+		};
+		glfwSetMouseButtonCallback(window, cast(GLFWmousebuttonfun)mouseCallback);
 
 		// Window close callback
-		glfwSetWindowCloseCallback(window, (window) {
+		auto closeCallback = (GLFWwindow* w) {
 			// Set shutdown flag (to be handled by main thread)
 			// For now, just stop polling
-			atomicStore(isRunning, false);
-		});
+			atomicStore(this.isRunning, false);
+		};
+		glfwSetWindowCloseCallback(window, cast(GLFWwindowclosefun)closeCallback);
 	}
 }
