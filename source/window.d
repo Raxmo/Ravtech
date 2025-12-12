@@ -87,7 +87,7 @@ class Window
 		}
 	}
 
-	GLFWwindow* getHandle()
+	@property GLFWwindow* Handle()
 	{
 		return handle;
 	}
