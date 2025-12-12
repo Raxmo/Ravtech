@@ -2,28 +2,42 @@ import core.time;
 import std.math;
 import std.stdio;
 
+private immutable double PI = 3.141592653589793;
+
 class Random
 {
-	// Constants for SplitMix64 PRNG
-	private static const long GOLDEN_RATIO = 0x9e3779b97f4a7c15;
-	private static const long MULT_A = 0xbf58476d1ce4e5b9;
-	private static const long MULT_B = 0x94d049bb133111eb;
-	private static const long DOUBLE_EXPONENT_BITS = 1023L << 52;  // [1.0, 2.0) exponent
-	private static const long MANTISSA_MASK = (1L << 52) - 1;  // 52 bits of mantissa
+	// Constants for SplitMix64 PRNG (static, compile-time constants for optimization)
+	static immutable long GOLDEN_RATIO = 0x9e3779b97f4a7c15;
+	static immutable long MULT_A = 0xbf58476d1ce4e5b9;
+	static immutable long MULT_B = 0x94d049bb133111eb;
+	static immutable long DOUBLE_EXPONENT_BITS = 1023L << 52;  // [1.0, 2.0) exponent
+	static immutable long MANTISSA_MASK = (1L << 52) - 1;  // 52 bits of mantissa
 
-	private static long state = 0;
+	private long state = 0;
+	private double cachedNormal = 0;
+	private bool hasCache = false;
 
-	static void seed(long value)
+	this()
+	{
+		seedFromTime();
+	}
+
+	this(long value)
+	{
+		seed(value);
+	}
+
+	void seed(long value) @nogc nothrow
 	{
 		state = value;
 	}
 
-	static void seedFromTime()
+	void seedFromTime() @nogc nothrow
 	{
 		state = MonoTime.currTime().ticks();
 	}
 
-	static double rand()
+	private double randDouble() @nogc nothrow pure
 	{
 		// Get next random long value
 		long bits = next();
@@ -37,58 +51,60 @@ class Random
 		return result - 1.0;
 	}
 
-	static long randLong()
+	// Function-call style RNG: rng!int(), rng!double(), rng!long(min, max), etc.
+	T opCall(T)() @nogc nothrow pure
+		if (is(T == double))
+	{
+		return randDouble();
+	}
+
+	T opCall(T)() @nogc nothrow pure
+		if (is(T == long))
 	{
 		return next();
 	}
 
-	static int randInt(int min, int max)
+	T opCall(T)() @nogc nothrow pure
+		if (is(T == int))
+	{
+		return cast(int)next();
+	}
+
+	// Ranged versions
+	T opCall(T)(T min, T max) @nogc nothrow pure
+		if (is(T == int))
 	{
 		long range = max - min;
-		return min + cast(int)(next() % range);
+		return min + cast(T)(next() % range);
 	}
 
-	static double fastRand()
+	T opCall(T)(T min, T max) @nogc nothrow pure
+		if (is(T == long))
 	{
-		// Fast PRNG: grabs current time for entropy, uses XOR-rotate (no multiply)
-		long time = MonoTime.currTime().ticks();
-		state += time;
-
-		// Fast XOR-add mixing with varied, unrelated shifts
-		long x = state;
-		x = x ^ (x >> 17);
-		x = x + (x << 31);
-		x = x ^ (x >> 8);
-		x = x + (x << 13);
-		x = x ^ (x >> 19);
-		x = x + (x << 5);
-		x = x ^ (x >> 27);
-
-		// Convert to double in [0.0, 1.0)
-		x = DOUBLE_EXPONENT_BITS | (x & MANTISSA_MASK);
-		double result = *(cast(double*)&x);
-		return result - 1.0;
+		long range = max - min;
+		return min + cast(T)(next() % range);
 	}
 
-	static long fastRandLong()
+	// Box-Muller normal distribution with output caching
+	double normal(double mean = 0.0, double stddev = 1.0) @nogc nothrow pure
 	{
-		// Fast PRNG without full mixing
-		long time = MonoTime.currTime().ticks();
-		state += time;
-
-		long x = state;
-		x = x ^ (x >> 17);
-		x = x + (x << 31);
-		x = x ^ (x >> 8);
-		x = x + (x << 13);
-		x = x ^ (x >> 19);
-		x = x + (x << 5);
-		x = x ^ (x >> 27);
-
-		return x;
+		if (hasCache) {
+			hasCache = false;
+			return mean + stddev * cachedNormal;
+		}
+		
+		double u1 = randDouble();
+		double u2 = randDouble();
+		double r = sqrt(-2.0 * log(u1));
+		double theta = 2.0 * PI * u2;
+		
+		cachedNormal = r * sin(theta);
+		hasCache = true;
+		
+		return mean + stddev * r * cos(theta);
 	}
 
-	private static long next()
+	private long next() @nogc nothrow pure
 	{
 		// SplitMix64 variant for better entropy
 		state += GOLDEN_RATIO;
@@ -99,43 +115,11 @@ class Random
 	}
 }
 
-// Unit test: Distribution check
-void testRandomDistribution()
-{
-	int[100] counts = 0;
-	
-	Random.seedFromTime();
-	
-	writeln("Testing distribution of 10000 random numbers...");
-	for (int i = 0; i < 10000; i++)
-	{
-		long val = Random.randLong();
-		int index = cast(int)(val % 100);
-		counts[index]++;
-	}
-	
-	writeln("\nDistribution (index: count):");
-	for (int i = 0; i < 100; i++)
-	{
-		writeln("Index ", i, ": ", counts[i]);
-	}
-	
-	// Calculate statistics
-	int minCount = int.max;
-	int maxCount = 0;
-	int totalCount = 0;
-	
-	foreach (count; counts)
-	{
-		if (count < minCount) minCount = count;
-		if (count > maxCount) maxCount = count;
-		totalCount += count;
-	}
-	
-	writeln("\nStatistics:");
-	writeln("Total: ", totalCount);
-	writeln("Expected per bucket: ", totalCount / 100);
-	writeln("Min count: ", minCount);
-	writeln("Max count: ", maxCount);
-	writeln("Range: ", maxCount - minCount);
-}
+
+
+
+
+
+
+
+

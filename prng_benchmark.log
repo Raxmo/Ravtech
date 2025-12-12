@@ -1,0 +1,23 @@
+PRNG Benchmark Results
+======================
+Iterations: 1000000
+
+SplitMix64 (quality PRNG):
+  Total time: 16717 microseconds
+  Per call: 0.016717 us
+  Calls/sec: 5.98193e+07
+
+Fast PRNG (XOR-add with time entropy):
+  Total time: 83990 microseconds
+  Per call: 0.08399 us
+  Calls/sec: 1.19062e+07
+
+Mersenne Twister (no init):
+  Total time: 40529 microseconds
+  Per call: 0.040529 us
+  Calls/sec: 2.46737e+07
+
+Comparison:
+  SplitMix64 vs Fast: 5.02423x
+  SplitMix64 vs MT: 2.42442x
+  Fast vs MT: 2.07234x

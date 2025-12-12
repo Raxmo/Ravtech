@@ -4,9 +4,7 @@ import std.stdio;
 
 int main()
 {
-	// Test random distribution
-	testRandomDistribution();
-	writeln("\n");
+	writeln();
 
 	App app = new App();
 
