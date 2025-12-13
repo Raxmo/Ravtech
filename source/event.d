@@ -4,7 +4,7 @@ import core.time;
 /**
  * ScheduledEvent - Event with Fiber and execution time
  */
-private struct ScheduledEvent
+struct ScheduledEvent
 {
 	Fiber fiber;
 	MonoTime executeTime;
@@ -136,5 +136,85 @@ class EventScheduler
 	void clear()
 	{
 		events = [];
+	}
+}
+
+unittest
+{
+	import core.thread;
+	import std.stdio;
+	
+	// Test: Basic Event Scheduling
+	{
+		EventScheduler scheduler = new EventScheduler();
+		bool executed = false;
+		
+		MonoTime now = MonoTime.currTime();
+		MonoTime execTime = now + 100.msecs;
+		
+		ref ScheduledEvent event = scheduler.scheduleAtTime(execTime, () {
+			executed = true;
+		});
+		
+		// Event should not be executed yet
+		scheduler.processEvents();
+		assert(!executed, "Event executed too early");
+		
+		// Wait until execution time
+		Thread.sleep(150.msecs);
+		scheduler.processEvents();
+		assert(executed, "Event did not execute");
+	}
+	
+	// Test: Event Cancellation
+	{
+		EventScheduler scheduler = new EventScheduler();
+		bool executed = false;
+		
+		MonoTime now = MonoTime.currTime();
+		MonoTime execTime = now + 200.msecs;
+		
+		ref ScheduledEvent event = scheduler.scheduleAtTime(execTime, () {
+			executed = true;
+		});
+		
+		// Cancel before execution
+		scheduler.cancel(event);
+		
+		// Wait past execution time
+		Thread.sleep(250.msecs);
+		scheduler.processEvents();
+		assert(!executed, "Canceled event still executed");
+	}
+	
+	// Test: Multiple Events
+	{
+		EventScheduler scheduler = new EventScheduler();
+		int count = 0;
+		
+		MonoTime now = MonoTime.currTime();
+		
+		scheduler.scheduleAtTime(now + 100.msecs, () { count++; });
+		scheduler.scheduleAtTime(now + 50.msecs, () { count++; });
+		scheduler.scheduleAtTime(now + 150.msecs, () { count++; });
+		
+		Thread.sleep(200.msecs);
+		scheduler.processEvents();
+		
+		assert(count == 3, "Not all events executed");
+	}
+	
+	// Test: hasEvents() Tracking
+	{
+		EventScheduler scheduler = new EventScheduler();
+		assert(!scheduler.hasEvents(), "New scheduler should have no events");
+		
+		MonoTime now = MonoTime.currTime();
+		ref ScheduledEvent event = scheduler.scheduleAtTime(now + 100.msecs, () {});
+		
+		assert(scheduler.hasEvents(), "Scheduler should have events after scheduling");
+		
+		scheduler.cancel(event);
+		assert(!scheduler.hasEvents(), "Scheduler should have no events after cancellation");
 	}
 }
