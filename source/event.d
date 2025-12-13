@@ -1,13 +1,14 @@
 import core.thread;
 import core.time;
+import utils;
 
 /**
- * ScheduledEvent - Event with Fiber and execution time
+ * ScheduledEvent - Event with Fiber and execution time (in microseconds)
  */
 struct ScheduledEvent
 {
 	Fiber fiber;
-	MonoTime executeTime;
+	long executeTimeUs;  // Microseconds since epoch (from TimeUtils)
 	size_t index;  // Index in the event pool, used for cancellation
 }
 
@@ -26,20 +27,20 @@ class EventScheduler
 	}
 	
 	/**
-	 * Schedule an event to execute after a delay
+	 * Schedule an event to execute after a delay (microseconds)
 	 * Returns a reference to the event in the pool for optional cancellation
 	 */
-	ref ScheduledEvent scheduleEvent(Duration delay, void delegate() action)
+	ref ScheduledEvent scheduleEvent(long delayUs, void delegate() action)
 	{
-		MonoTime executeTime = MonoTime.currTime() + delay;
-		return scheduleAtTime(executeTime, action);
+		long executeTimeUs = TimeUtils.currTimeUs() + delayUs;
+		return scheduleAtTime(executeTimeUs, action);
 	}
 	
 	/**
-	 * Schedule an event to execute at an absolute time
+	 * Schedule an event to execute at an absolute time (microseconds)
 	 * Returns a reference to the event in the pool for optional cancellation
 	 */
-	ref ScheduledEvent scheduleAtTime(MonoTime executeTime, void delegate() action)
+	ref ScheduledEvent scheduleAtTime(long executeTimeUs, void delegate() action)
 	{
 		// Create fiber that runs action directly (no internal waiting)
 		// Scheduler controls all timing via processEvents()
@@ -48,7 +49,7 @@ class EventScheduler
 		});
 		
 		size_t idx = events.length;
-		events ~= ScheduledEvent(fiber, executeTime, idx);
+		events ~= ScheduledEvent(fiber, executeTimeUs, idx);
 		return events[$ - 1];
 	}
 	
@@ -74,7 +75,7 @@ class EventScheduler
 	 */
 	void processEvents()
 	{
-		MonoTime currentTime = MonoTime.currTime();
+		long currentTimeUs = TimeUtils.currTimeUs();
 		
 		size_t writeIdx = 0;
 		foreach (ref e; events)
@@ -84,7 +85,7 @@ class EventScheduler
 				continue;
 			
 			// Execute if ready
-			if (e.executeTime <= currentTime)
+			if (e.executeTimeUs <= currentTimeUs)
 				e.fiber.call();
 			
 			// Keep non-terminated fibers
@@ -113,15 +114,15 @@ class EventScheduler
 	}
 	
 	/**
-	 * Get next event's execution time
+	 * Get next event's execution time (microseconds)
 	 */
-	MonoTime nextEventTime()
+	long nextEventTimeUs()
 	{
-		MonoTime nextTime = MonoTime.max;
+		long nextTime = long.max;
 		foreach (e; events)
 		{
-			if (e.fiber.state != Fiber.State.TERM && e.executeTime < nextTime)
-				nextTime = e.executeTime;
+			if (e.fiber.state != Fiber.State.TERM && e.executeTimeUs < nextTime)
+				nextTime = e.executeTimeUs;
 		}
 		return nextTime;
 	}
@@ -144,14 +145,14 @@ unittest
 	{
 		EventScheduler scheduler = new EventScheduler();
 		bool executed = false;
-		MonoTime actualExecutionTime;
+		long actualExecutionTimeUs;
 		
-		MonoTime now = MonoTime.currTime();
-		MonoTime scheduledTime = now + 1.seconds;
+		long nowUs = TimeUtils.currTimeUs();
+		long scheduledTimeUs = nowUs + 1_000_000;  // 1 second in microseconds
 		
-		ref ScheduledEvent event = scheduler.scheduleAtTime(scheduledTime, () {
+		ref ScheduledEvent event = scheduler.scheduleAtTime(scheduledTimeUs, () {
 			executed = true;
-			actualExecutionTime = MonoTime.currTime();
+			actualExecutionTimeUs = TimeUtils.currTimeUs();
 		});
 		
 		// Event should not be executed yet
@@ -159,31 +160,26 @@ unittest
 		assert(!executed, "Event executed too early");
 		
 		// Poll processEvents until event executes
-		while (!executed && MonoTime.currTime() < scheduledTime + 100.msecs)
+		while (!executed && TimeUtils.currTimeUs() < scheduledTimeUs + 100_000)  // 100ms timeout
 		{
 			scheduler.processEvents();
 		}
 		
 		assert(executed, "Event did not execute");
 		
-		// Calculate timing accuracy
-		Duration timingError = actualExecutionTime - scheduledTime;
-		long rawTickDiff = actualExecutionTime.ticks() - scheduledTime.ticks();
-		long tps = MonoTime.ticksPerSecond();
-		double nsPerTick = 1_000_000_000.0 / tps;
-		long errorNs = timingError.total!"nsecs";
-		long errorUs = timingError.total!"usecs";
-		long errorMs = timingError.total!"msecs";
+		// Calculate timing accuracy (in microseconds)
+		long errorUs = actualExecutionTimeUs - scheduledTimeUs;
+		double nsPerTick = TimeUtils.getNanosecondsPerTick();
+		long tps = TimeUtils.getTicksPerSecond();
 		
 		writeln("  Platform Resolution:");
 		writeln("    ticksPerSecond: ", tps);
 		writeln("    nanoseconds per tick: ", nsPerTick);
-		writeln("  Scheduled: ", scheduledTime);
-		writeln("  Executed:  ", actualExecutionTime);
-		writeln("  Raw tick diff: ", rawTickDiff, " ticks");
-		writeln("  Error:     ", errorNs, " ns (", errorUs, " µs, ", errorMs, " ms)");
-		assert(timingError >= Duration.zero, "Event executed before scheduled time");
-		assert(timingError < 100.msecs, "Timing error too large");
+		writeln("  Scheduled: ", scheduledTimeUs, " µs");
+		writeln("  Executed:  ", actualExecutionTimeUs, " µs");
+		writeln("  Error:     ", errorUs, " µs (", errorUs / 1000, " ms)");
+		assert(errorUs >= 0, "Event executed before scheduled time");
+		assert(errorUs < 100_000, "Timing error too large (>100ms)");
 	}
 	
 	// Test: Event Cancellation
@@ -191,10 +187,10 @@ unittest
 		EventScheduler scheduler = new EventScheduler();
 		bool executed = false;
 		
-		MonoTime now = MonoTime.currTime();
-		MonoTime execTime = now + 200.msecs;
+		long nowUs = TimeUtils.currTimeUs();
+		long execTimeUs = nowUs + 200_000;  // 200ms in microseconds
 		
-		ref ScheduledEvent event = scheduler.scheduleAtTime(execTime, () {
+		ref ScheduledEvent event = scheduler.scheduleAtTime(execTimeUs, () {
 			executed = true;
 		});
 		
@@ -212,11 +208,11 @@ unittest
 		EventScheduler scheduler = new EventScheduler();
 		int count = 0;
 		
-		MonoTime now = MonoTime.currTime();
+		long nowUs = TimeUtils.currTimeUs();
 		
-		scheduler.scheduleAtTime(now + 100.msecs, () { count++; });
-		scheduler.scheduleAtTime(now + 50.msecs, () { count++; });
-		scheduler.scheduleAtTime(now + 150.msecs, () { count++; });
+		scheduler.scheduleAtTime(nowUs + 100_000, () { count++; });  // 100ms
+		scheduler.scheduleAtTime(nowUs + 50_000, () { count++; });   // 50ms
+		scheduler.scheduleAtTime(nowUs + 150_000, () { count++; });  // 150ms
 		
 		Thread.sleep(200.msecs);
 		scheduler.processEvents();
@@ -229,8 +225,8 @@ unittest
 		EventScheduler scheduler = new EventScheduler();
 		assert(!scheduler.hasEvents(), "New scheduler should have no events");
 		
-		MonoTime now = MonoTime.currTime();
-		ref ScheduledEvent event = scheduler.scheduleAtTime(now + 100.msecs, () {});
+		long nowUs = TimeUtils.currTimeUs();
+		ref ScheduledEvent event = scheduler.scheduleAtTime(nowUs + 100_000, () {});
 		
 		assert(scheduler.hasEvents(), "Scheduler should have events after scheduling");
 		
