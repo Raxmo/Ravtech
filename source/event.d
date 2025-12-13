@@ -151,7 +151,7 @@ unittest
 		MonoTime actualExecutionTime;
 		
 		MonoTime now = MonoTime.currTime();
-		MonoTime scheduledTime = now + 100.msecs;
+		MonoTime scheduledTime = now + 10.msecs;
 		
 		ref ScheduledEvent event = scheduler.scheduleAtTime(scheduledTime, () {
 			executed = true;
@@ -162,18 +162,22 @@ unittest
 		scheduler.processEvents();
 		assert(!executed, "Event executed too early");
 		
-		// Wait until execution time
-		Thread.sleep(150.msecs);
-		scheduler.processEvents();
+		// Poll processEvents until event executes
+		while (!executed && MonoTime.currTime() < scheduledTime + 100.msecs)
+		{
+			scheduler.processEvents();
+		}
+		
 		assert(executed, "Event did not execute");
 		
 		// Calculate timing accuracy
 		Duration timingError = actualExecutionTime - scheduledTime;
+		long errorNs = timingError.total!"nsecs";
 		writeln("  Scheduled: ", scheduledTime);
 		writeln("  Executed:  ", actualExecutionTime);
-		writeln("  Error:     ", timingError.total!"msecs", " ms (scheduler wakes from sleep and processes)");
-		assert(timingError >= 0.msecs, "Event executed before scheduled time");
-		assert(timingError < 100.msecs, "Timing error unexpectedly large");
+		writeln("  Error:     ", errorNs, " ns");
+		assert(timingError >= Duration.zero, "Event executed before scheduled time");
+		assert(timingError < 1.msecs, "Timing error too large");
 	}
 	
 	// Test: Event Cancellation
