@@ -169,12 +169,18 @@ unittest
 		// Calculate timing accuracy
 		Duration timingError = actualExecutionTime - scheduledTime;
 		long rawTickDiff = actualExecutionTime.ticks() - scheduledTime.ticks();
+		long tps = MonoTime.ticksPerSecond();
+		double nsPerTick = 1_000_000_000.0 / tps;
 		long errorNs = timingError.total!"nsecs";
 		long errorUs = timingError.total!"usecs";
 		long errorMs = timingError.total!"msecs";
-		writeln("  Scheduled: ", scheduledTime, " (ticks per second: ", scheduledTime.ticksPerSecond(), ")");
+		
+		writeln("  Platform Resolution:");
+		writeln("    ticksPerSecond: ", tps);
+		writeln("    nanoseconds per tick: ", nsPerTick);
+		writeln("  Scheduled: ", scheduledTime);
 		writeln("  Executed:  ", actualExecutionTime);
-		writeln("  Raw tick diff: ", rawTickDiff);
+		writeln("  Raw tick diff: ", rawTickDiff, " ticks");
 		writeln("  Error:     ", errorNs, " ns (", errorUs, " µs, ", errorMs, " ms)");
 		assert(timingError >= Duration.zero, "Event executed before scheduled time");
 		assert(timingError < 100.msecs, "Timing error too large");
