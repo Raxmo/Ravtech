@@ -8,14 +8,12 @@ import core.time;
 static class TimeUtils
 {
 	private static long ticksPerSecond_;
-	private static double ticksPerMicrosecond_;
-	private static double microsecondsPerTick_;
+	private static long ticksPerMicrosecond_;
 	
 	shared static this()
 	{
 		ticksPerSecond_ = MonoTime.ticksPerSecond();
-		ticksPerMicrosecond_ = ticksPerSecond_ / 1_000_000.0;
-		microsecondsPerTick_ = 1_000_000.0 / ticksPerSecond_;
+		ticksPerMicrosecond_ = ticksPerSecond_ / 1_000_000;
 	}
 	
 	/**
@@ -23,7 +21,7 @@ static class TimeUtils
 	 */
 	static long currTimeUs()
 	{
-		return cast(long)(MonoTime.currTime().ticks() * microsecondsPerTick_);
+		return MonoTime.currTime().ticks() / ticksPerMicrosecond_;
 	}
 	
 	/**
@@ -40,7 +38,7 @@ static class TimeUtils
 	 */
 	static long usToTicks(long us)
 	{
-		return cast(long)(us * ticksPerMicrosecond_);
+		return us * ticksPerMicrosecond_;
 	}
 	
 	/**
@@ -48,7 +46,7 @@ static class TimeUtils
 	 */
 	static long ticksToUs(long ticks)
 	{
-		return cast(long)(ticks * microsecondsPerTick_);
+		return ticks / ticksPerMicrosecond_;
 	}
 	
 	/**
