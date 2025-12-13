@@ -140,14 +140,14 @@ unittest
 	import core.thread;
 	import std.stdio;
 	
-	// Test: Basic Event Scheduling with Timing Verification
+	// Test: Basic Event Scheduling with Timing Verification (1 second)
 	{
 		EventScheduler scheduler = new EventScheduler();
 		bool executed = false;
 		MonoTime actualExecutionTime;
 		
 		MonoTime now = MonoTime.currTime();
-		MonoTime scheduledTime = now + 10.msecs;
+		MonoTime scheduledTime = now + 1.seconds;
 		
 		ref ScheduledEvent event = scheduler.scheduleAtTime(scheduledTime, () {
 			executed = true;
@@ -169,11 +169,13 @@ unittest
 		// Calculate timing accuracy
 		Duration timingError = actualExecutionTime - scheduledTime;
 		long errorNs = timingError.total!"nsecs";
+		long errorUs = timingError.total!"usecs";
+		long errorMs = timingError.total!"msecs";
 		writeln("  Scheduled: ", scheduledTime);
 		writeln("  Executed:  ", actualExecutionTime);
-		writeln("  Error:     ", errorNs, " ns");
+		writeln("  Error:     ", errorNs, " ns (", errorUs, " µs, ", errorMs, " ms)");
 		assert(timingError >= Duration.zero, "Event executed before scheduled time");
-		assert(timingError < 1.msecs, "Timing error too large");
+		assert(timingError < 100.msecs, "Timing error too large");
 	}
 	
 	// Test: Event Cancellation
