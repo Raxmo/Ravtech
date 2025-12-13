@@ -144,16 +144,18 @@ unittest
 	import core.thread;
 	import std.stdio;
 	
-	// Test: Basic Event Scheduling
+	// Test: Basic Event Scheduling with Timing Verification
 	{
 		EventScheduler scheduler = new EventScheduler();
 		bool executed = false;
+		MonoTime actualExecutionTime;
 		
 		MonoTime now = MonoTime.currTime();
-		MonoTime execTime = now + 100.msecs;
+		MonoTime scheduledTime = now + 100.msecs;
 		
-		ref ScheduledEvent event = scheduler.scheduleAtTime(execTime, () {
+		ref ScheduledEvent event = scheduler.scheduleAtTime(scheduledTime, () {
 			executed = true;
+			actualExecutionTime = MonoTime.currTime();
 		});
 		
 		// Event should not be executed yet
@@ -164,6 +166,14 @@ unittest
 		Thread.sleep(150.msecs);
 		scheduler.processEvents();
 		assert(executed, "Event did not execute");
+		
+		// Calculate timing accuracy
+		Duration timingError = actualExecutionTime - scheduledTime;
+		writeln("  Scheduled: ", scheduledTime);
+		writeln("  Executed:  ", actualExecutionTime);
+		writeln("  Error:     ", timingError.total!"msecs", " ms (scheduler wakes from sleep and processes)");
+		assert(timingError >= 0.msecs, "Event executed before scheduled time");
+		assert(timingError < 100.msecs, "Timing error unexpectedly large");
 	}
 	
 	// Test: Event Cancellation
