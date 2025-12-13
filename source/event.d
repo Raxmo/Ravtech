@@ -70,34 +70,33 @@ class EventScheduler
 	
 	/**
 	 * Process all events due at current time
+	 * Single pass: execute ready events and compact array in one iteration
 	 */
 	void processEvents()
 	{
 		MonoTime currentTime = MonoTime.currTime();
 		
-		// Remove finished fibers using swap-with-last
-		size_t i = 0;
-		while (i < events.length)
+		size_t writeIdx = 0;
+		foreach (ref e; events)
 		{
-			if (events[i].fiber.state == Fiber.State.TERM)
+			// Skip terminated fibers entirely
+			if (e.fiber.state == Fiber.State.TERM)
+				continue;
+			
+			// Execute if ready
+			if (e.executeTime <= currentTime)
+				e.fiber.call();
+			
+			// Keep non-terminated fibers
+			if (e.fiber.state != Fiber.State.TERM)
 			{
-				events[i] = events[$ - 1];
-				events = events[0..$ - 1];
-			}
-			else
-			{
-				i++;
+				events[writeIdx] = e;
+				events[writeIdx].index = writeIdx;
+				writeIdx++;
 			}
 		}
 		
-		// Resume fibers that are ready
-		foreach (ref e; events)
-		{
-			if (e.executeTime <= currentTime && e.fiber.state != Fiber.State.TERM)
-			{
-				e.fiber.call();
-			}
-		}
+		events = events[0..writeIdx];
 	}
 	
 	/**
