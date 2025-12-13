@@ -1,108 +1,110 @@
 import core.time;
-import std.math;
-import std.stdio;
 
-private immutable double PI = 0x1.921fb54442d18p1;  // IEEE 754 double-precision π
-
-class Random
+/**
+ * Time utilities for cross-platform timing
+ * Public API: microseconds
+ * Internal: native platform ticks
+ */
+static class TimeUtils
 {
-	// Constants for SplitMix64 PRNG (static, compile-time constants for optimization)
-	static immutable long GOLDEN_RATIO = 0x9e3779b97f4a7c15;
-	static immutable long MULT_A = 0xbf58476d1ce4e5b9;
-	static immutable long MULT_B = 0x94d049bb133111eb;
-	static immutable long DOUBLE_EXPONENT_BITS = 1023L << 52;  // [1.0, 2.0) exponent
-	static immutable long MANTISSA_MASK = (1L << 52) - 1;  // 52 bits of mantissa
-
-	private long state = 0;
-
-	this()
+	private static long ticksPerSecond_;
+	private static double ticksPerMicrosecond_;
+	private static double microsecondsPerTick_;
+	
+	shared static this()
 	{
-		seedFromTime();
+		ticksPerSecond_ = MonoTime.ticksPerSecond();
+		ticksPerMicrosecond_ = ticksPerSecond_ / 1_000_000.0;
+		microsecondsPerTick_ = 1_000_000.0 / ticksPerSecond_;
 	}
-
-	this(long value)
+	
+	/**
+	 * Get current time in microseconds
+	 */
+	static long currTimeUs()
 	{
-		seed(value);
+		return cast(long)(MonoTime.currTime().ticks() * microsecondsPerTick_);
 	}
-
-	void seed(long value) @nogc nothrow
+	
+	/**
+	 * Get current time in raw platform ticks (highest available resolution)
+	 * For benchmarking and internal use only
+	 */
+	static long currTimeTicks()
 	{
-		state = value;
+		return MonoTime.currTime().ticks();
 	}
-
-	void seedFromTime() @nogc nothrow
+	
+	/**
+	 * Convert microseconds to platform ticks
+	 */
+	static long usToTicks(long us)
 	{
-		state = MonoTime.currTime().ticks();
+		return cast(long)(us * ticksPerMicrosecond_);
 	}
-
-	private double randDouble() @nogc nothrow pure
+	
+	/**
+	 * Convert platform ticks to microseconds
+	 */
+	static long ticksToUs(long ticks)
 	{
-		// Get next random long value
-		long bits = next();
-
-		// Mask lower 52 bits (highest entropy) as mantissa of double in [1.0, 2.0)
-		// by bitcasting with exponent bits set to 1023
-		bits = DOUBLE_EXPONENT_BITS | (bits & MANTISSA_MASK);
-		double result = *(cast(double*)&bits);
-
-		// Subtract 1.0 to get [0.0, 1.0)
-		return result - 1.0;
+		return cast(long)(ticks * microsecondsPerTick_);
 	}
-
-	// Function-call style RNG: rng!int(), rng!double(), rng!long(min, max), etc.
-	T opCall(T)() @nogc nothrow pure
-		if (is(T == double))
+	
+	/**
+	 * Get platform's native tick frequency (ticks per second)
+	 * Useful for understanding resolution on this system
+	 */
+	static long getTicksPerSecond()
 	{
-		return randDouble();
+		return ticksPerSecond_;
 	}
-
-	T opCall(T)() @nogc nothrow pure
-		if (is(T == long))
+	
+	/**
+	 * Get native resolution in nanoseconds per tick
+	 * Lower is better (e.g., 1 = nanosecond, 333 = 333 nanoseconds)
+	 */
+	static double getNanosecondsPerTick()
 	{
-		return next();
+		return 1_000_000_000.0 / ticksPerSecond_;
 	}
+}
 
-	T opCall(T)() @nogc nothrow pure
-		if (is(T == int))
+unittest
+{
+	import std.stdio;
+	
+	writeln("=== TimeUtils Test ===");
+	
+	// Test: Conversions are consistent
 	{
-		return cast(int)next();
-	}
-
-	// Ranged versions
-	T opCall(T)(T min, T max) @nogc nothrow pure
-		if (is(T == int))
-	{
-		long range = max - min;
-		return min + cast(T)(next() % range);
-	}
-
-	T opCall(T)(T min, T max) @nogc nothrow pure
-		if (is(T == long))
-	{
-		long range = max - min;
-		return min + cast(T)(next() % range);
-	}
-
-	// Box-Muller normal distribution (no caching for consistent cost)
-	double normal(double mean = 0.0, double stddev = 1.0) @nogc nothrow pure
-	{
-		double u1 = randDouble();
-		double u2 = randDouble();
-		double r = sqrt(-2.0 * log(u1));
-		double theta = 2.0 * PI * u2;
+		long us = 1000;  // 1 millisecond
+		long ticks = TimeUtils.usToTicks(us);
+		long backToUs = TimeUtils.ticksToUs(ticks);
 		
-		return mean + stddev * r * cos(theta);
+		// Allow small rounding error
+		assert(backToUs >= us - 1 && backToUs <= us + 1, "Conversion roundtrip failed");
+		writeln("  Conversion roundtrip: 1000µs -> ticks -> ", backToUs, "µs (rounding OK)");
 	}
-
-	private long next() @nogc nothrow pure
+	
+	// Test: Platform resolution
 	{
-		// SplitMix64 with full mixing
-		state += GOLDEN_RATIO;
-		long x = state;
-		x = (x ^ (x >> 30)) * MULT_A;
-		x = x ^ (x >> 27);
-		x = x * MULT_B;
-		x = x ^ (x >> 33);
-		return x;
+		long tps = TimeUtils.getTicksPerSecond();
+		double nsPerTick = TimeUtils.getNanosecondsPerTick();
+		writeln("  Platform: ", tps, " ticks/sec = ", nsPerTick, " ns/tick");
 	}
+	
+	// Test: Current time is sensible
+	{
+		long t1Us = TimeUtils.currTimeUs();
+		long t1Ticks = TimeUtils.currTimeTicks();
+		
+		assert(t1Us > 0, "Current time should be positive");
+		assert(t1Ticks > 0, "Current ticks should be positive");
+		assert(t1Ticks > t1Us, "Ticks should be larger number than microseconds");
+		
+		writeln("  Current time: ", t1Us, " µs = ", t1Ticks, " ticks");
+	}
+	
+	writeln("=== TimeUtils passed ===\n");
 }
