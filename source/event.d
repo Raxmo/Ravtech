@@ -41,12 +41,9 @@ class EventScheduler
 	 */
 	ref ScheduledEvent scheduleAtTime(MonoTime executeTime, void delegate() action)
 	{
-		// Create fiber that waits until executeTime, then runs action
+		// Create fiber that runs action directly (no internal waiting)
+		// Scheduler controls all timing via processEvents()
 		Fiber fiber = new Fiber(() {
-			while (MonoTime.currTime() < executeTime)
-			{
-				Fiber.yield();
-			}
 			action();
 		});
 		
