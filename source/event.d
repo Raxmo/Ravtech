@@ -24,14 +24,12 @@ struct ScheduledEvent
  */
 class EventScheduler
 {
-	private ScheduledEvent[] events;  // Ring buffer pool (grows as needed)
-	private size_t eventCount;       // Actual number of events in pool
-	private size_t head;             // Monotonic position in ring (wraps via modulo)
+	private ScheduledEvent*[] events;  // Ring buffer pool of pointers (grows as needed)
+	private size_t head;              // Monotonic position in ring (wraps via modulo)
 	
 	this()
 	{
 		events = [];
-		eventCount = 0;
 		head = 0;
 	}
 	
@@ -49,115 +47,100 @@ class EventScheduler
 	 * Schedule an event to execute at an absolute time (microseconds)
 	 * Returns a reference to the event in the pool for optional cancellation
 	 */
-	ref ScheduledEvent scheduleAtTime(long executeTimeUs, void delegate() action)
+	ScheduledEvent* scheduleAtTime(long executeTimeUs, void delegate() action)
 	{
-		// Create fiber that runs action directly (no internal waiting)
-		// Scheduler controls all timing via processNext()
+		// Create fiber that runs action directly
 		Fiber fiber = new Fiber(() {
 			action();
 		});
 		
-		// Grow pool if needed (infrequent after startup)
-		if (eventCount >= events.length)
-		{
-			events.length = events.length == 0 ? 32 : events.length * 2;
-		}
+		// Allocate event on heap
+		ScheduledEvent* event = new ScheduledEvent(fiber, executeTimeUs, events.length);
 		
-		size_t idx = eventCount;
-		events[idx] = ScheduledEvent(fiber, executeTimeUs, idx);
-		eventCount++;
-		return events[idx];
+		// Add to pool
+		events ~= event;
+		return event;
 	}
 	
 	/**
-	 * Cancel a scheduled event by reference (O(1) swap-with-last removal)
+	 * Cancel a scheduled event by pointer (O(1) swap-with-last removal)
 	 * The last event in pool is moved into the cancelled event's slot and
-	 * its index updated. An event that reschedules itself executes immediately
-	 * and swaps itself with the newly scheduled copy, naturally deferring itself
-	 * until the next sweep through the pool.
+	 * its index updated.
 	 */
-	void cancel(ref ScheduledEvent event)
+	void cancel(ScheduledEvent* event)
 	{
 		size_t idx = event.index;
-		if (idx < eventCount && &events[idx] is &event)
+		if (idx < events.length && events[idx] is event)
 		{
 			// Swap last event into this slot, update its index
-			events[idx] = events[eventCount - 1];
+			events[idx] = events[$ - 1];
 			events[idx].index = idx;
-			eventCount--;
+			events = events[0..$ - 1];
 		}
 	}
 	
 	/**
-	 * Process the next ready event in the ring buffer
-	 * Advances head monotonically; returns true if an event was executed,
-	 * false if no more events are ready at current time.
-	 * 
-	 * Events scheduled during execution are added to the pool and will be
-	 * encountered as head continues sweeping. Terminated fibers are removed
-	 * immediately via swap-with-last.
+	 * Process all ready events in the ring buffer
 	 */
-	bool processNext()
+	void processReady()
 	{
-		if (eventCount == 0)
-			return false;
+		if (events.length == 0)
+			return; 
 		
 		long currentTimeUs = TimeUtils.currTimeUs();
 		
-		// Sweep through pool looking for ready events
-		for (size_t attempts = 0; attempts < eventCount; attempts++)
+		// Sweep through pool starting at head, wrapping around
+		for (size_t i = 0; i < events.length; i++)
 		{
-			size_t pos = head % eventCount;
-			ref ScheduledEvent e = events[pos];
-			head++;
-			
-			// Remove terminated fibers immediately
-			if (e.fiber.state == Fiber.State.TERM)
-			{
-				// Swap last event into this position, update its index
-				events[pos] = events[eventCount - 1];
-				events[pos].index = pos;
-				eventCount--;
-				// Don't increment head past removed slot; check it again on next iteration
-				head--;
-				continue;
-			}
-			
-			// Check if ready
+			ScheduledEvent* e = events[head];
+			head = (head + 1) % events.length;
+		
+			// Check if event is due
 			if (e.executeTimeUs <= currentTimeUs)
 			{
+				// Execute the event
 				e.fiber.call();
-				return true;  // Processed one event
+				
+				// Remove completed event from pool and clean up
+				if (head == 0)
+				{
+					// We just wrapped; remove the last event
+					destroy(e);
+					events = events[0..$ - 1];
+				}
+				else
+				{
+					// Swap last into current position
+					destroy(e);
+					events[e.index] = events[$ - 1];
+					events[e.index].index = e.index;
+					events = events[0..$ - 1];
+				}
 			}
-			
-			// Event not ready yet; no point checking further (not in time order)
-			return false;
 		}
 		
-		return false;
 	}
 	
 	/**
-	 * Process all ready events by repeatedly calling processNext()
-	 * Runs until no more events are ready at current time.
+	 * Process all ready events by repeatedly calling processReady()
+	 * Runs while the pool has events.
 	 * Handles event chaining: events scheduled during execution are processed
 	 * as head sweeps through the pool.
 	 */
 	void processEvents()
 	{
-		while (processNext())
+		while (events.length > 0)
 		{
-			// Keep processing ready events
+			processReady();
 		}
 	}
 	
 	/**
 	 * Check if there are any pending events
-	 * Pool contains only live events (terminated fibers removed immediately)
 	 */
 	bool hasEvents()
 	{
-		return eventCount > 0;
+		return events.length > 0;
 	}
 	
 	/**
@@ -166,7 +149,7 @@ class EventScheduler
 	long nextEventTimeUs()
 	{
 		long nextTime = long.max;
-		foreach (e; events[0..eventCount])
+		foreach (e; events)
 		{
 			if (e.executeTimeUs < nextTime)
 				nextTime = e.executeTimeUs;
@@ -179,8 +162,11 @@ class EventScheduler
 	 */
 	void clear()
 	{
+		foreach (e; events)
+		{
+			destroy(e);
+		}
 		events = [];
-		eventCount = 0;
 		head = 0;
 	}
 }
