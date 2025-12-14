@@ -20,7 +20,7 @@ struct ScheduledEvent
  * 
  * Architecture: Ring buffer pool with monotonic head pointer. Events are executed
  * when their scheduled time arrives; those scheduled during execution are processed
- * in subsequent `processNext()` iterations. Removal via swap-with-last.
+ * in subsequent `processReady()` iterations. Removal via swap-with-last.
  */
 class EventScheduler
 {
@@ -45,7 +45,7 @@ class EventScheduler
 	
 	/**
 	 * Schedule an event to execute at an absolute time (microseconds)
-	 * Returns a reference to the event in the pool for optional cancellation
+	 * Returns a pointer to the event in the pool for optional cancellation
 	 */
 	ScheduledEvent* scheduleAtTime(long executeTimeUs, void delegate() action)
 	{
@@ -90,6 +90,8 @@ class EventScheduler
 	
 	/**
 	 * Process all ready events in the ring buffer
+	 * Uses do-while loop with head position tracking to sweep pool exactly once,
+	 * even as removal shrinks the array during iteration.
 	 */
 	void processReady()
 	{
@@ -97,12 +99,13 @@ class EventScheduler
 			return; 
 		
 		long currentTimeUs = TimeUtils.currTimeUs();
+		size_t startHead = head;
 		
-		// Sweep through pool starting at head, wrapping around
-		for (size_t i = 0; i < events.length; i++)
+		// Sweep through pool starting at head, wrapping around exactly once
+		do
 		{
 			ScheduledEvent* e = events[head];
-		
+			
 			// Check if event is due
 			if (e.executeTimeUs <= currentTimeUs)
 			{
@@ -112,7 +115,7 @@ class EventScheduler
 				// Remove completed event from pool
 				removeEvent(e);
 				
-				// If pool is now empty, break early
+				// If pool is now empty, exit early
 				if (events.length == 0)
 				{
 					head = 0;
@@ -120,9 +123,10 @@ class EventScheduler
 				}
 			}
 			
-			// Advance head after processing
+			// Advance head after processing, wrapping if needed
 			head = (head + 1) % events.length;
-		}
+			
+		} while (head != startHead && events.length > 0);
 	}
 	
 	/**
