@@ -1,5 +1,6 @@
 import core.thread;
 import core.time;
+import std.math;
 import utils;
 
 /**
@@ -232,5 +233,80 @@ unittest
 		
 		scheduler.cancel(event);
 		assert(!scheduler.hasEvents(), "Scheduler should have no events after cancellation");
+	}
+	
+	// Test: Timing Variance with 5ms intervals (1000 events)
+	{
+		EventScheduler scheduler = new EventScheduler();
+		long[] executionErrors;  // Timing errors in microseconds
+		
+		long baseTimeUs = TimeUtils.currTimeUs();
+		long intervalUs = 5_000;  // 5 millisecond interval
+		int eventCount = 1000;
+		
+		// Schedule 100 events at 50µs intervals
+		for (int i = 0; i < eventCount; i++)
+		{
+			long scheduleTimeUs = baseTimeUs + (i * intervalUs);
+			scheduler.scheduleAtTime(scheduleTimeUs, () {
+				long actualTimeUs = TimeUtils.currTimeUs();
+				long scheduledTimeUs = baseTimeUs + (cast(int)executionErrors.length * intervalUs);
+				long errorUs = actualTimeUs - scheduledTimeUs;
+				executionErrors ~= errorUs;
+			});
+		}
+		
+		// Process all events by polling
+		long pollDeadlineUs = baseTimeUs + (eventCount * intervalUs) + 10_000;  // 10ms buffer
+		while (scheduler.hasEvents() && TimeUtils.currTimeUs() < pollDeadlineUs)
+		{
+			scheduler.processEvents();
+		}
+		
+		// Calculate statistics
+		if (executionErrors.length > 0)
+		{
+			long minErrorUs = executionErrors[0];
+			long maxErrorUs = executionErrors[0];
+			long sumErrorUs = 0;
+			long sumSquaredErrorUs = 0;
+			
+			foreach (err; executionErrors)
+			{
+				if (err < minErrorUs) minErrorUs = err;
+				if (err > maxErrorUs) maxErrorUs = err;
+				sumErrorUs += err;
+				sumSquaredErrorUs += err * err;
+			}
+			
+			long meanErrorUs = sumErrorUs / cast(long)executionErrors.length;
+			long varianceUs = sumSquaredErrorUs / cast(long)executionErrors.length - (meanErrorUs * meanErrorUs);
+			double stddevUs = (varianceUs >= 0) ? sqrt(cast(double)varianceUs) : 0.0;
+			
+			writeln("\n  Timing Variance Test (5ms intervals, ", eventCount, " events):");
+			
+			// Histogram of errors to show distribution
+			long[] errorBuckets = [0, 0, 0, 0, 0];  // 0-50, 50-100, 100-200, 200-500, 500+
+			foreach (err; executionErrors)
+			{
+				if (err <= 50) errorBuckets[0]++;
+				else if (err <= 100) errorBuckets[1]++;
+				else if (err <= 200) errorBuckets[2]++;
+				else if (err <= 500) errorBuckets[3]++;
+				else errorBuckets[4]++;
+			}
+			writeln("    Error distribution:");
+			writeln("      0-50µs:   ", errorBuckets[0], " events");
+			writeln("      50-100µs: ", errorBuckets[1], " events");
+			writeln("      100-200µs:", errorBuckets[2], " events");
+			writeln("      200-500µs:", errorBuckets[3], " events");
+			writeln("      500µs+:   ", errorBuckets[4], " events");
+			writeln("    Events executed: ", executionErrors.length);
+			writeln("    Min error:  ", minErrorUs, " µs");
+			writeln("    Max error:  ", maxErrorUs, " µs");
+			writeln("    Mean error: ", meanErrorUs, " µs");
+			writeln("    Stddev:     ", stddevUs, " µs");
+			writeln("    Range:      ", (maxErrorUs - minErrorUs), " µs");
+		}
 	}
 }
