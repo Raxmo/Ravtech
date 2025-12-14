@@ -179,10 +179,113 @@ static class TimeUtils
 	}
 }
 
+/**
+ * DeltaTime - Per-system delta time tracker
+ * 
+ * Caches delta time in both microseconds and seconds to avoid repeated division.
+ * Users explicitly call update() to compute delta since last update, ensuring
+ * tight timing control and deterministic frame-based operation.
+ * 
+ * Designed for pooled compute systems: each system (physics, animation, etc.)
+ * has its own instance, calls update() before processing, and passes itself
+ * to subscribers who access the cached delta value.
+ */
+class DeltaTime
+{
+	private long lastUpdateUs;     // Last update time (microseconds)
+	private long cachedDeltaUs;    // Cached delta in microseconds
+	private double cachedSeconds;  // Cached delta in seconds (pre-calculated)
+	
+	/**
+	 * Initialize delta tracker at current time
+	 */
+	this()
+	{
+		lastUpdateUs = TimeUtils.currTimeUs();
+		cachedDeltaUs = 0;
+		cachedSeconds = 0.0;
+	}
+	
+	/**
+	 * Update delta time: compute elapsed time since last update and cache both values
+	 * Division from microseconds to seconds happens exactly once per update
+	 */
+	void update()
+	{
+		long nowUs = TimeUtils.currTimeUs();
+		cachedDeltaUs = nowUs - lastUpdateUs;
+		lastUpdateUs = nowUs;
+		cachedSeconds = cachedDeltaUs / 1_000_000.0;
+	}
+	
+	/**
+	 * Get cached delta time in microseconds
+	 */
+	@property long deltaUs() const
+	{
+		return cachedDeltaUs;
+	}
+	
+	/**
+	 * Get cached delta time in seconds
+	 */
+	@property double seconds() const
+	{
+		return cachedSeconds;
+	}
+}
+
 unittest
 {
 	import std.stdio;
+	import core.thread;
 	
+	// DeltaTime tests
+	{
+		writeln("=== DeltaTime Test ===");
+		
+		DeltaTime delta = new DeltaTime();
+		
+		// Initial state: delta should be 0
+		assert(delta.deltaUs == 0, "Initial delta should be 0");
+		assert(delta.seconds == 0.0, "Initial seconds should be 0");
+		writeln("  Initial state: deltaUs=", delta.deltaUs, ", seconds=", delta.seconds);
+		
+		// Sleep for a small amount and update
+		Thread.sleep(10.msecs);
+		delta.update();
+		
+		long expectedMinUs = 9_000;   // At least 9ms (accounting for timing variance)
+		long expectedMaxUs = 50_000;  // At most 50ms (very conservative upper bound)
+		
+		assert(delta.deltaUs >= expectedMinUs && delta.deltaUs <= expectedMaxUs,
+			"Delta should be ~10ms, got " ~ delta.deltaUs.stringof ~ "µs");
+		assert(delta.seconds > 0.009 && delta.seconds < 0.05,
+			"Seconds should be ~0.01, got " ~ delta.seconds.stringof);
+		
+		writeln("  After 10ms sleep:");
+		writeln("    deltaUs: ", delta.deltaUs);
+		writeln("    seconds: ", delta.seconds);
+		
+		// Verify cached values don't change without update
+		long cachedUs = delta.deltaUs;
+		double cachedSec = delta.seconds;
+		Thread.sleep(5.msecs);
+		
+		assert(delta.deltaUs == cachedUs, "Delta should not change without update()");
+		assert(delta.seconds == cachedSec, "Seconds should not change without update()");
+		writeln("  Values stable without update(): ✓");
+		
+		// Update again and verify new delta
+		delta.update();
+		assert(delta.deltaUs >= 4_000 && delta.deltaUs <= 20_000,
+			"Second delta should be ~5ms");
+		writeln("  After second update: deltaUs=", delta.deltaUs);
+		
+		writeln("=== DeltaTime passed ===\n");
+	}
+	
+	// TimeUtils tests
 	writeln("=== TimeUtils Test ===");
 	
 	// Test: Conversions are consistent
