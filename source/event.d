@@ -5,42 +5,44 @@ import utils;
 
 /**
  * ScheduledEvent - Event with Fiber and execution time (in microseconds)
+ * Intrusive node in circular doubly-linked list of scheduled events
  */
 struct ScheduledEvent
 {
 	Fiber fiber;
 	long executeTimeUs;  // Microseconds since epoch (from TimeUtils)
-	size_t index;  // Index in the event pool, used for cancellation
 	EventScheduler* scheduler;  // Pointer to owning scheduler for cancellation
+	ScheduledEvent* prev;  // Previous node in circular list
+	ScheduledEvent* next;  // Next node in circular list
 	
 	/**
-	 * Cancel this scheduled event (O(1) removal via swap-with-last)
+	 * Cancel this scheduled event (O(1) removal via unlink)
 	 */
 	void cancel()
 	{
 		if (scheduler)
-			scheduler.removeEvent(this.index);
+			scheduler.removeEvent(&this);
 	}
 }
 
 /**
- * EventScheduler - Timeline-based event system using Fibers with Ring Buffer
+ * EventScheduler - Timeline-based event system using Fibers with Circular Linked List
  * Events are scheduled with a delay or absolute time and executed deterministically
  * when their time arrives. Single-threaded, microsecond precision.
  * 
- * Architecture: Ring buffer pool with monotonic head pointer. Events are executed
- * when their scheduled time arrives; those scheduled during execution are processed
- * in subsequent `processReady()` iterations. Removal via swap-with-last.
+ * Architecture: Intrusive circular doubly-linked list. Events are executed
+ * when their scheduled time arrives; those scheduled during execution are
+ * processed in subsequent `processReady()` iterations. Removal via O(1) unlink.
  */
 class EventScheduler
 {
-	private ScheduledEvent*[] events;  // Ring buffer pool of pointers (grows as needed)
-	private size_t head;              // Monotonic position in ring (wraps via modulo)
+	private ScheduledEvent* head;  // Head of circular list (null if empty)
+	private ScheduledEvent* current;  // Current position during processReady()
 	
 	this()
 	{
-		events = [];
-		head = 0;
+		head = null;
+		current = null;
 	}
 	
 	/**
@@ -65,49 +67,97 @@ class EventScheduler
 		});
 		
 		// Allocate event on heap
-		ScheduledEvent* event = new ScheduledEvent(fiber, executeTimeUs, events.length, cast(EventScheduler*)this);
+		ScheduledEvent* event = new ScheduledEvent();
+		event.fiber = fiber;
+		event.executeTimeUs = executeTimeUs;
+		event.scheduler = cast(EventScheduler*)this;
+		event.prev = null;
+		event.next = null;
 		
-		// Add to pool
-		events ~= event;
+		// Insert into circular list
+		insertNode(event);
+		
 		return event;
 	}
 	
 	/**
-	 * Remove an event from the pool via swap-with-last (O(1) operation)
-	 * The last event in pool is moved into the removed event's slot and
-	 * its index updated. The removed event is destroyed.
+	 * Insert a node into the circular list (add at end, before head)
 	 */
-	package void removeEvent(size_t index)
+	private void insertNode(ScheduledEvent* node)
 	{
-		if (index >= events.length)
-			return;
-		
-		ScheduledEvent* event = events[index];
-		
-		// Swap last event into this slot, update its index
-		events[index] = events[$ - 1];
-		events[index].index = index;
-		events = events[0..$ - 1];
-		destroy(event);
+		if (head == null)
+		{
+			// First node: point to itself
+			head = node;
+			node.prev = node;
+			node.next = node;
+		}
+		else
+		{
+			// Insert before head (at end of list)
+			node.next = head;
+			node.prev = head.prev;
+			head.prev.next = node;
+			head.prev = node;
+		}
 	}
 	
 	/**
-	 * Process all ready events in the ring buffer
-	 * Uses do-while loop with head position tracking to sweep pool exactly once,
-	 * even as removal shrinks the array during iteration.
+	 * Remove a node from the circular list via unlink (O(1) operation)
+	 * Adjusts prev/next pointers and destroys the node.
+	 */
+	package void removeEvent(ScheduledEvent* node)
+	{
+		if (node == null || head == null)
+			return;
+		
+		// If only one node, it's the head
+		if (node.next == node)
+		{
+			head = null;
+			current = null;
+		}
+		else
+		{
+			// Unlink the node
+			node.prev.next = node.next;
+			node.next.prev = node.prev;
+			
+			// If removing current node, advance to next
+			if (current == node)
+				current = node.next;
+			
+			// If removing head, update head
+			if (head == node)
+				head = node.next;
+		}
+		
+		destroy(node);
+	}
+	
+	/**
+	 * Process all ready events in the circular list
+	 * Traverses the list exactly once, executing events when due.
 	 */
 	void processReady()
 	{
-		if (events.length == 0)
-			return; 
+		if (head == null)
+			return;
 		
 		long currentTimeUs = TimeUtils.currTimeUs();
-		size_t startHead = head;
 		
-		// Sweep through pool starting at head, wrapping around exactly once
+		// Start or resume traversal from head
+		if (current == null)
+			current = head;
+		
+		ScheduledEvent* startNode = current;
+		bool firstIteration = true;
+		
+		// Sweep through list exactly once
 		do
 		{
-			ScheduledEvent* e = events[head];
+			ScheduledEvent* e = current;
+			ScheduledEvent* nextNode = e.next;  // Save next before potential removal
 			
 			// Check if event is due
 			if (e.executeTimeUs <= currentTimeUs)
@@ -115,32 +165,43 @@ class EventScheduler
 				// Execute the event
 				e.fiber.call();
 				
-				// Remove completed event from pool by index
-				removeEvent(e.index);
+				// Remove completed event from list
+				removeEvent(e);
 				
-				// If pool is now empty, exit early
-				if (events.length == 0)
+				// If list is now empty, exit
+				if (head == null)
 				{
-					head = 0;
+					current = null;
 					break;
 				}
+				
+				// Continue from next node (which was already saved)
+				current = nextNode;
+			}
+			else
+			{
+				// Advance to next node
+				current = nextNode;
 			}
 			
-			// Advance head after processing, wrapping if needed
-			head = (head + 1) % events.length;
+			firstIteration = false;
 			
-		} while (head != startHead && events.length > 0);
+		} while (current != startNode && head != null);
+		
+		// Reset current if we've completed a full sweep
+		if (current == startNode && !firstIteration)
+			current = null;
 	}
 	
 	/**
 	 * Process all ready events by repeatedly calling processReady()
-	 * Runs while the pool has events.
+	 * Runs while the list has events.
 	 * Handles event chaining: events scheduled during execution are processed
-	 * as head sweeps through the pool.
+	 * as traversal continues through the list.
 	 */
 	void processEvents()
 	{
-		while (events.length > 0)
+		while (head != null)
 		{
 			processReady();
 		}
@@ -151,7 +212,7 @@ class EventScheduler
 	 */
 	bool hasEvents()
 	{
-		return events.length > 0;
+		return head != null;
 	}
 	
 	/**
@@ -159,25 +220,35 @@ class EventScheduler
 	 */
 	long nextEventTimeUs()
 	{
+		if (head == null)
+			return long.max;
+		
 		long nextTime = long.max;
-		foreach (e; events)
+		ScheduledEvent* node = head;
+		
+		do
 		{
-			if (e.executeTimeUs < nextTime)
-				nextTime = e.executeTimeUs;
-		}
+			if (node.executeTimeUs < nextTime)
+				nextTime = node.executeTimeUs;
+			node = node.next;
+		} while (node != head);
+		
 		return nextTime;
 	}
 	
 	/**
-	 * Clear all events and reset head
+	 * Clear all events
 	 */
 	void clear()
 	{
-		foreach (e; events)
+		while (head != null)
 		{
-			destroy(e);
+			ScheduledEvent* node = head.next;
+			removeEvent(head);
+			if (head == node)  // Was the last node
+				break;
 		}
-		events = [];
-		head = 0;
+		head = null;
+		current = null;
 	}
 }
