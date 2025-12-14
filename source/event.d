@@ -94,7 +94,8 @@ class EventScheduler
 	 * false if no more events are ready at current time.
 	 * 
 	 * Events scheduled during execution are added to the pool and will be
-	 * encountered as head continues sweeping. Terminated fibers are skipped.
+	 * encountered as head continues sweeping. Terminated fibers are removed
+	 * immediately via swap-with-last.
 	 */
 	bool processNext()
 	{
@@ -103,16 +104,24 @@ class EventScheduler
 		
 		long currentTimeUs = TimeUtils.currTimeUs();
 		
-		// Skip through terminated fibers until we find a live one
+		// Sweep through pool looking for ready events
 		for (size_t attempts = 0; attempts < eventCount; attempts++)
 		{
 			size_t pos = head % eventCount;
 			ref ScheduledEvent e = events[pos];
 			head++;
 			
-			// Skip terminated fibers
+			// Remove terminated fibers immediately
 			if (e.fiber.state == Fiber.State.TERM)
+			{
+				// Swap last event into this position, update its index
+				events[pos] = events[eventCount - 1];
+				events[pos].index = pos;
+				eventCount--;
+				// Don't increment head past removed slot; check it again on next iteration
+				head--;
 				continue;
+			}
 			
 			// Check if ready
 			if (e.executeTimeUs <= currentTimeUs)
@@ -143,16 +152,12 @@ class EventScheduler
 	}
 	
 	/**
-	 * Check if there are any pending non-terminated events
+	 * Check if there are any pending events
+	 * Pool contains only live events (terminated fibers removed immediately)
 	 */
 	bool hasEvents()
 	{
-		foreach (e; events[0..eventCount])
-		{
-			if (e.fiber.state != Fiber.State.TERM)
-				return true;
-		}
-		return false;
+		return eventCount > 0;
 	}
 	
 	/**
@@ -163,7 +168,7 @@ class EventScheduler
 		long nextTime = long.max;
 		foreach (e; events[0..eventCount])
 		{
-			if (e.fiber.state != Fiber.State.TERM && e.executeTimeUs < nextTime)
+			if (e.executeTimeUs < nextTime)
 				nextTime = e.executeTimeUs;
 		}
 		return nextTime;
