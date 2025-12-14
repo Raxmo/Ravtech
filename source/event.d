@@ -11,6 +11,16 @@ struct ScheduledEvent
 	Fiber fiber;
 	long executeTimeUs;  // Microseconds since epoch (from TimeUtils)
 	size_t index;  // Index in the event pool, used for cancellation
+	EventScheduler* scheduler;  // Pointer to owning scheduler for cancellation
+	
+	/**
+	 * Cancel this scheduled event (O(1) removal via swap-with-last)
+	 */
+	void cancel()
+	{
+		if (scheduler)
+			scheduler.removeEvent(this.index);
+	}
 }
 
 /**
@@ -55,7 +65,7 @@ class EventScheduler
 		});
 		
 		// Allocate event on heap
-		ScheduledEvent* event = new ScheduledEvent(fiber, executeTimeUs, events.length);
+		ScheduledEvent* event = new ScheduledEvent(fiber, executeTimeUs, events.length, cast(EventScheduler*)this);
 		
 		// Add to pool
 		events ~= event;
@@ -63,27 +73,20 @@ class EventScheduler
 	}
 	
 	/**
-	 * Cancel a scheduled event by pointer (O(1) swap-with-last removal)
-	 */
-	void cancel(ScheduledEvent* event)
-	{
-		size_t idx = event.index;
-		if (idx < events.length && events[idx] is event)
-		{
-			removeEvent(event);
-		}
-	}
-	
-	/**
 	 * Remove an event from the pool via swap-with-last (O(1) operation)
 	 * The last event in pool is moved into the removed event's slot and
 	 * its index updated. The removed event is destroyed.
 	 */
-	private void removeEvent(ScheduledEvent* event)
+	package void removeEvent(size_t index)
 	{
+		if (index >= events.length)
+			return;
+		
+		ScheduledEvent* event = events[index];
+		
 		// Swap last event into this slot, update its index
-		events[event.index] = events[$ - 1];
-		events[event.index].index = event.index;
+		events[index] = events[$ - 1];
+		events[index].index = index;
 		events = events[0..$ - 1];
 		destroy(event);
 	}
@@ -112,8 +115,8 @@ class EventScheduler
 				// Execute the event
 				e.fiber.call();
 				
-				// Remove completed event from pool
-				removeEvent(e);
+				// Remove completed event from pool by index
+				removeEvent(e.index);
 				
 				// If pool is now empty, exit early
 				if (events.length == 0)
