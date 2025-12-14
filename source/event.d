@@ -94,8 +94,8 @@ class EventScheduler
 	 * false if no more events are ready at current time.
 	 * 
 	 * Events scheduled during execution are added to the pool and will be
-	 * encountered as head continues sweeping. Terminated fibers are removed
-	 * immediately via swap-with-last.
+	 * encountered as head continues sweeping. Terminated fibers are skipped
+	 * (removed during cleanup() pass).
 	 */
 	bool processNext()
 	{
@@ -104,24 +104,16 @@ class EventScheduler
 		
 		long currentTimeUs = TimeUtils.currTimeUs();
 		
-		// Sweep through pool looking for ready events
+		// Sweep through pool looking for ready events (skip terminated fibers)
 		for (size_t attempts = 0; attempts < eventCount; attempts++)
 		{
 			size_t pos = head % eventCount;
 			ref ScheduledEvent e = events[pos];
 			head++;
 			
-			// Remove terminated fibers immediately
+			// Skip terminated fibers (they'll be cleaned up later)
 			if (e.fiber.state == Fiber.State.TERM)
-			{
-				// Swap last event into this position, update its index
-				events[pos] = events[eventCount - 1];
-				events[pos].index = pos;
-				eventCount--;
-				// Don't increment head past removed slot; check it again on next iteration
-				head--;
 				continue;
-			}
 			
 			// Check if ready
 			if (e.executeTimeUs <= currentTimeUs)
@@ -138,26 +130,58 @@ class EventScheduler
 	}
 	
 	/**
+	 * Clean up terminated fibers from the pool
+	 * Called periodically to maintain pool hygiene
+	 */
+	private void cleanup()
+	{
+		size_t writeIdx = 0;
+		for (size_t i = 0; i < eventCount; i++)
+		{
+			if (events[i].fiber.state != Fiber.State.TERM)
+			{
+				events[writeIdx] = events[i];
+				events[writeIdx].index = writeIdx;
+				writeIdx++;
+			}
+		}
+		eventCount = writeIdx;
+	}
+	
+	/**
 	 * Process all ready events by repeatedly calling processNext()
 	 * Runs until no more events are ready at current time.
 	 * Handles event chaining: events scheduled during execution are processed
 	 * as head sweeps through the pool.
+	 * Periodically cleans up terminated fibers to prevent pool bloat.
 	 */
 	void processEvents()
 	{
+		int processedCount = 0;
 		while (processNext())
 		{
 			// Keep processing ready events
+			processedCount++;
+			// Cleanup every 100 events to prevent dead fiber accumulation
+			if ((processedCount % 100) == 0)
+				cleanup();
 		}
+		// Final cleanup
+		cleanup();
 	}
 	
 	/**
-	 * Check if there are any pending events
-	 * Pool contains only live events (terminated fibers removed immediately)
+	 * Check if there are any pending live events
+	 * Note: pool may contain terminated fibers; we check fiber state to find live ones
 	 */
 	bool hasEvents()
 	{
-		return eventCount > 0;
+		foreach (e; events[0..eventCount])
+		{
+			if (e.fiber.state != Fiber.State.TERM)
+				return true;
+		}
+		return false;
 	}
 	
 	/**
@@ -168,7 +192,7 @@ class EventScheduler
 		long nextTime = long.max;
 		foreach (e; events[0..eventCount])
 		{
-			if (e.executeTimeUs < nextTime)
+			if (e.fiber.state != Fiber.State.TERM && e.executeTimeUs < nextTime)
 				nextTime = e.executeTimeUs;
 		}
 		return nextTime;
