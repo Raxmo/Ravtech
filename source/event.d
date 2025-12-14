@@ -35,9 +35,9 @@ class EventScheduler
 	
 	/**
 	 * Schedule an event to execute after a delay (microseconds)
-	 * Returns a reference to the event in the pool for optional cancellation
+	 * Returns a pointer to the event in the pool for optional cancellation
 	 */
-	ref ScheduledEvent scheduleEvent(long delayUs, void delegate() action)
+	ScheduledEvent* scheduleEvent(long delayUs, void delegate() action)
 	{
 		long executeTimeUs = TimeUtils.currTimeUs() + delayUs;
 		return scheduleAtTime(executeTimeUs, action);
@@ -64,19 +64,28 @@ class EventScheduler
 	
 	/**
 	 * Cancel a scheduled event by pointer (O(1) swap-with-last removal)
-	 * The last event in pool is moved into the cancelled event's slot and
-	 * its index updated.
 	 */
 	void cancel(ScheduledEvent* event)
 	{
 		size_t idx = event.index;
 		if (idx < events.length && events[idx] is event)
 		{
-			// Swap last event into this slot, update its index
-			events[idx] = events[$ - 1];
-			events[idx].index = idx;
-			events = events[0..$ - 1];
+			removeEvent(event);
 		}
+	}
+	
+	/**
+	 * Remove an event from the pool via swap-with-last (O(1) operation)
+	 * The last event in pool is moved into the removed event's slot and
+	 * its index updated. The removed event is destroyed.
+	 */
+	private void removeEvent(ScheduledEvent* event)
+	{
+		// Swap last event into this slot, update its index
+		events[event.index] = events[$ - 1];
+		events[event.index].index = event.index;
+		events = events[0..$ - 1];
+		destroy(event);
 	}
 	
 	/**
@@ -93,7 +102,6 @@ class EventScheduler
 		for (size_t i = 0; i < events.length; i++)
 		{
 			ScheduledEvent* e = events[head];
-			head = (head + 1) % events.length;
 		
 			// Check if event is due
 			if (e.executeTimeUs <= currentTimeUs)
@@ -101,24 +109,20 @@ class EventScheduler
 				// Execute the event
 				e.fiber.call();
 				
-				// Remove completed event from pool and clean up
-				if (head == 0)
+				// Remove completed event from pool
+				removeEvent(e);
+				
+				// If pool is now empty, break early
+				if (events.length == 0)
 				{
-					// We just wrapped; remove the last event
-					destroy(e);
-					events = events[0..$ - 1];
-				}
-				else
-				{
-					// Swap last into current position
-					destroy(e);
-					events[e.index] = events[$ - 1];
-					events[e.index].index = e.index;
-					events = events[0..$ - 1];
+					head = 0;
+					break;
 				}
 			}
+			
+			// Advance head after processing
+			head = (head + 1) % events.length;
 		}
-		
 	}
 	
 	/**
