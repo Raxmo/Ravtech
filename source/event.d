@@ -243,11 +243,12 @@ class EventScheduler
 	{
 		while (head != null)
 		{
-			ScheduledEvent* node = head.next;
+			ScheduledEvent* next = head.next;
 			removeEvent(head);
-			if (head == node)  // Was the last node
-				break;
+			// removeEvent updates head, so we continue with what's left
+			// No comparison needed; the while condition handles empty list
 		}
+		// head is already null from removeEvent, but be explicit
 		head = null;
 		current = null;
 	}
