@@ -149,13 +149,13 @@ final class HierarchicalContainer(T) : ListenerContainer!T
 
 	private void bubbleUp(HierarchicalListener!T node, Event!T event)
 	{
-		foreach (child; node.children) {
-			if (event.consumed)
-				return;
+		foreach (child; node.children)
 			bubbleUp(child, event);
-		}
-
-		if (!event.consumed && node.callback)
+		
+		if (event.consumed)
+			return;
+		
+		if (node.callback)
 			node.callback(event);	
 	}
 }
