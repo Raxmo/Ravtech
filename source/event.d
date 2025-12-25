@@ -1,119 +1,347 @@
 import core.thread;
 import core.time;
-import std.math;
+import std.stdio;
 import utils;
 
 /**
- * ScheduledEvent - Event with Fiber and execution time (in microseconds)
- * Intrusive node in circular doubly-linked list of scheduled events
+ * EventType - Event listener organization and propagation strategy
+ * 
+ * Pool: Flat, unordered listeners. All fired immediately.
+ * Bubble: Hierarchical listeners, child → parent propagation.
+ * Trickle: Hierarchical listeners, parent → child propagation.
  */
-struct ScheduledEvent
+enum EventType
 {
-	Fiber fiber;
-	long executeTimeUs;  // Microseconds since epoch (from TimeUtils)
-	EventScheduler* scheduler;  // Pointer to owning scheduler for cancellation
-	ScheduledEvent* prev;  // Previous node in circular list
-	ScheduledEvent* next;  // Next node in circular list
+	Pool,       // Flat listener collection
+	Bubble,     // Hierarchical, child → parent
+	Trickle     // Hierarchical, parent → child
+}
+
+/**
+ * ITrigger - Type-erased trigger interface
+ * 
+ * All triggers implement this interface to allow type-agnostic scheduling.
+ * The scheduler works entirely with ITrigger references.
+ */
+interface ITrigger
+{
+	/// Execute the trigger, notifying its linked event with stored payload
+	void notify();
+}
+
+/**
+ * ListenerContainer - Abstract interface for listener storage and propagation
+ * Generic over payload type T
+ */
+interface ListenerContainer(T)
+{
+	alias ListenerDelegate = void delegate(Event!T event);
 	
-	/**
-	 * Cancel this scheduled event (O(1) removal via unlink)
-	 */
-	void cancel()
+	void addListener(ListenerDelegate listener);
+	void removeListener(ListenerDelegate listener);
+	void fire(Event!T event);
+}
+
+/**
+ * HierarchicalListener - Node in the listener tree
+ */
+final class HierarchicalListener(T)
+{
+	alias ListenerDelegate = void delegate(Event!T event);
+	
+	ListenerDelegate callback;
+	HierarchicalListener!T parent;
+	HierarchicalListener!T[] children;
+	
+	this(ListenerDelegate cb)
 	{
-		if (scheduler)
-			scheduler.removeEvent(&this);
+		this.callback = cb;
+		this.parent = null;
+	}
+	
+	void addChild(HierarchicalListener!T child)
+	{
+		child.parent = this;
+		children ~= child;
+	}
+	
+	void removeChild(HierarchicalListener!T child)
+	{
+		foreach (i, c; children)
+		{
+			if (c == child)
+			{
+				children = children[0 .. i] ~ children[i + 1 .. $];
+				return;
+			}
+		}
 	}
 }
 
 /**
- * EventScheduler - Timeline-based event system using Fibers with Circular Linked List
- * Events are scheduled with a delay or absolute time and executed deterministically
- * when their time arrives. Single-threaded, microsecond precision.
- * 
- * Architecture: Intrusive circular doubly-linked list. Events are executed
- * when their scheduled time arrives; those scheduled during execution are
- * processed in subsequent `processReady()` iterations. Removal via O(1) unlink.
+ * HierarchicalContainer - Listener tree with configurable propagation
  */
-class EventScheduler
+final class HierarchicalContainer(T) : ListenerContainer!T
 {
-	private ScheduledEvent* head;  // Head of circular list (null if empty)
-	private ScheduledEvent* current;  // Current position during processReady()
+	alias ListenerDelegate = void delegate(Event!T event);
 	
-	this()
+	private EventType propagationType;
+	private HierarchicalListener!T[] roots;
+	this(EventType propType)
 	{
-		head = null;
-		current = null;
+		this.propagationType = propType;
+	}
+	
+	void addListener(ListenerDelegate listener)
+	{
+		HierarchicalListener!T node = new HierarchicalListener!T(listener);
+		roots ~= node;
+	}
+	
+	void removeListener(ListenerDelegate listener)
+	{
+		foreach (i, root; roots)
+		{
+			if (root.callback == listener)
+			{
+				roots = roots[0 .. i] ~ roots[i + 1 .. $];
+				return;
+			}
+		}
+	}
+	
+	void fire(Event!T event)
+	{
+		final switch (propagationType)
+		{
+			case EventType.Pool:
+				// Pool: Fire roots only, no propagation to children
+				foreach (root; roots)
+				{
+					if (root.callback)
+						root.callback(event);
+				}
+				break;
+			case EventType.Trickle:
+				// Trickle: Parent → Child propagation
+				foreach (root; roots)
+					trickleDown(root, event);
+				break;
+			case EventType.Bubble:
+				// Bubble: Child → Parent propagation
+				foreach (root; roots)
+					bubbleUp(root, event);
+				break;
+		}
+	}
+	
+	private void trickleDown(HierarchicalListener!T node, Event!T event)
+	{
+		if (node.callback)
+			node.callback(event);
+		
+		if (event.consumed)
+			return;
+		
+		foreach (child; node.children)
+			trickleDown(child, event);
+	}
+
+	private void bubbleUp(HierarchicalListener!T node, Event!T event)
+	{
+		foreach (child; node.children) {
+			if (event.consumed)
+				return;
+			bubbleUp(child, event);
+		}
+
+		if (!event.consumed && node.callback)
+			node.callback(event);	
+	}
+}
+
+/**
+ * Event - Reusable, stateful event with typed payload and listeners
+ * 
+ * Fires listeners using a container that handles storage and propagation.
+ * Payload is set by Trigger before fire() and holds type-safe data for listeners.
+ * T: Payload type (use void for no payload)
+ */
+class Event(T)
+{
+	protected string name;
+	protected ListenerContainer!T container;
+	protected T payload;
+	protected bool consumed = false;
+	
+	this(string name, EventType type)
+	{
+		this.name = name;
+		this.container = new HierarchicalContainer!T(type);
 	}
 	
 	/**
-	 * Schedule an event to execute after a delay (microseconds)
-	 * Returns a pointer to the event in the pool for optional cancellation
+	 * Add a listener callback
 	 */
-	ScheduledEvent* scheduleEvent(long delayUs, void delegate() action)
+	void addListener(void delegate(Event!T) listener)
+	{
+		container.addListener(listener);
+	}
+	
+	/**
+	 * Remove a listener callback
+	 */
+	void removeListener(void delegate(Event!T) listener)
+	{
+		container.removeListener(listener);
+	}
+	
+	/**
+	 * Fire this event, invoking all listeners via container
+	 */
+	void fire()
+	{
+		container.fire(this);
+	}
+	
+	/**
+	 * Notify listeners with a specific payload
+	 * Called by triggers to deliver the payload
+	 */
+	void notifyWithPayload(T payload)
+	{
+		this.payload = payload;
+		this.consumed = false;  // Reset consumption flag
+		fire();
+	}
+	
+	/**
+	 * Get payload (called by listeners)
+	 */
+	T getPayload() const
+	{
+		return payload;
+	}
+	
+	/**
+	 * Mark event as consumed to stop propagation
+	 */
+	void consume()
+	{
+		consumed = true;
+	}
+	
+	/**
+	 * Check if event was consumed
+	 */
+	bool isConsumed() const
+	{
+		return consumed;
+	}
+	
+	@property string getName() const { return name; }
+}
+
+/**
+ * Trigger - Typed trigger implementing ITrigger
+ * 
+ * Carries an event and payload, implements type-erased notify() interface.
+ * Can be executed immediately or scheduled with TriggerScheduler.
+ * T: Payload type passed to listeners
+ */
+class Trigger(T) : ITrigger
+{
+	Event!T targetEvent;
+	T payload;
+	
+	this(Event!T event, T data)
+	{
+		this.targetEvent = event;
+		this.payload = data;
+	}
+	
+	/**
+	 * Notify the linked event with this trigger's payload
+	 * Implements ITrigger interface for type-agnostic scheduling
+	 */
+	void notify()
+	{
+		targetEvent.notifyWithPayload(payload);
+	}
+	
+	@property Event!T getEvent() { return targetEvent; }
+}
+
+
+
+/**
+ * ScheduledTrigger - Instance of a trigger scheduled for execution
+ * 
+ * Non-templated node storing ITrigger reference.
+ * Intrusive node in circular doubly-linked list.
+ * Works with all trigger types regardless of payload.
+ */
+struct ScheduledTrigger
+{
+	ITrigger trigger;
+	long executeTimeUs;
+	ScheduledTrigger* prev;
+	ScheduledTrigger* next;
+	
+	void cancel()
+	{
+		TriggerScheduler.removeScheduledTrigger(&this);
+	}
+}
+
+/**
+ * TriggerScheduler - Global timeline managing all scheduled triggers
+ * 
+ * Single-threaded, microsecond precision event execution.
+ * Uses circular doubly-linked list for O(1) removal and efficient traversal.
+ * Type-agnostic: works with all trigger types through ITrigger interface.
+ */
+static class TriggerScheduler
+{
+	private static ScheduledTrigger* head;
+	private static ScheduledTrigger* current;
+	
+	/**
+	 * Schedule a trigger for execution at an absolute time (sorted insertion)
+	 */
+	static ScheduledTrigger* scheduleTrigger(ITrigger trigger, long executeTimeUs)
+	{
+		ScheduledTrigger* scheduled = new ScheduledTrigger();
+		scheduled.trigger = trigger;
+		scheduled.executeTimeUs = executeTimeUs;
+		scheduled.prev = null;
+		scheduled.next = null;
+		
+		insertNodeSorted(scheduled);
+		
+		return scheduled;
+	}
+	
+	/**
+	 * Schedule a trigger with a delay from now
+	 */
+	static ScheduledTrigger* scheduleTrigger(ITrigger trigger, long delayUs, bool isDelay)
 	{
 		long executeTimeUs = TimeUtils.currTimeUs() + delayUs;
-		return scheduleAtTime(executeTimeUs, action);
+		return scheduleTrigger(trigger, executeTimeUs);
 	}
 	
 	/**
-	 * Schedule an event to execute at an absolute time (microseconds)
-	 * Returns a pointer to the event in the pool for optional cancellation
+	 * Remove a scheduled trigger from the timeline
 	 */
-	ScheduledEvent* scheduleAtTime(long executeTimeUs, void delegate() action)
-	{
-		// Create fiber that runs action directly
-		Fiber fiber = new Fiber(() {
-			action();
-		});
-		
-		// Allocate event on heap
-		ScheduledEvent* event = new ScheduledEvent();
-		event.fiber = fiber;
-		event.executeTimeUs = executeTimeUs;
-		event.scheduler = cast(EventScheduler*)this;
-		event.prev = null;
-		event.next = null;
-		
-		// Insert into circular list
-		insertNode(event);
-		
-		return event;
-	}
-	
-	/**
-	 * Insert a node into the circular list (add at end, before head)
-	 */
-	private void insertNode(ScheduledEvent* node)
-	{
-		if (head == null)
-		{
-			// First node: point to itself
-			head = node;
-			node.prev = node;
-			node.next = node;
-		}
-		else
-		{
-			// Insert before head (at end of list)
-			node.next = head;
-			node.prev = head.prev;
-			head.prev.next = node;
-			head.prev = node;
-		}
-	}
-	
-	/**
-	 * Remove a node from the circular list via unlink (O(1) operation)
-	 * Adjusts prev/next pointers and destroys the node.
-	 */
-	package void removeEvent(ScheduledEvent* node)
+	static void removeScheduledTrigger(ScheduledTrigger* node)
 	{
 		if (node == null || head == null)
 			return;
 		
-		// If only one node, it's the head
 		if (node.next == node)
 		{
+			// Only node in list
 			head = null;
 			current = null;
 		}
@@ -123,11 +351,9 @@ class EventScheduler
 			node.prev.next = node.next;
 			node.next.prev = node.prev;
 			
-			// If removing current node, advance to next
 			if (current == node)
 				current = node.next;
 			
-			// If removing head, update head
 			if (head == node)
 				head = node.next;
 		}
@@ -136,70 +362,73 @@ class EventScheduler
 	}
 	
 	/**
-	 * Process all ready events in the circular list
-	 * Traverses the list exactly once, executing events when due.
+	 * Insert a node into sorted position (ascending by executeTimeUs)
+	 * Walks backwards from tail for O(1) insertion in typical use case
 	 */
-	void processReady()
+	private static void insertNodeSorted(ScheduledTrigger* node)
+	{
+		if (head == null)
+		{
+			// First node
+			head = node;
+			node.prev = node;
+			node.next = node;
+			current = null;
+			return;
+		}
+		
+		// Walk backwards from tail, comparing with new node's executeTime
+		ScheduledTrigger* pos = head.prev;  // Start at tail
+		
+		// Find insertion point: first node with executeTimeUs <= new node's time
+		while (pos != head && pos.executeTimeUs > node.executeTimeUs)
+		{
+			pos = pos.prev;
+		}
+		
+		// Now pos is either head (new node should be first) or a node with executeTimeUs <= new node's time
+		if (pos == head && head.executeTimeUs > node.executeTimeUs)
+		{
+			// New node is earliest, insert before head
+			node.next = head;
+			node.prev = head.prev;
+			head.prev.next = node;
+			head.prev = node;
+			head = node;  // New head
+		}
+		else
+		{
+			// Insert after pos
+			node.next = pos.next;
+			node.prev = pos;
+			pos.next.prev = node;
+			pos.next = node;
+		}
+	}
+	
+	/**
+	 * Process next ready trigger if available
+	 * Since list is sorted, head is always the next trigger to execute
+	 */
+	static void processReady()
 	{
 		if (head == null)
 			return;
 		
 		long currentTimeUs = TimeUtils.currTimeUs();
 		
-		// Start or resume traversal from head
-		if (current == null)
-			current = head;
-		
-		ScheduledEvent* startNode = current;
-		bool firstIteration = true;
-		
-		// Sweep through list exactly once
-		do
+		if (head.executeTimeUs <= currentTimeUs)
 		{
-			ScheduledEvent* e = current;
-			ScheduledEvent* nextNode = e.next;  // Save next before potential removal
-			
-			// Check if event is due
-			if (e.executeTimeUs <= currentTimeUs)
-			{
-				// Execute the event
-				e.fiber.call();
-				
-				// Remove completed event from list
-				removeEvent(e);
-				
-				// If list is now empty, exit
-				if (head == null)
-				{
-					current = null;
-					break;
-				}
-				
-				// Continue from next node (which was already saved)
-				current = nextNode;
-			}
-			else
-			{
-				// Advance to next node
-				current = nextNode;
-			}
-			
-			firstIteration = false;
-			
-		} while (current != startNode && head != null);
-		
-		// Reset current if we've completed a full sweep
-		if (current == startNode && !firstIteration)
-			current = null;
+			// Head is ready, execute and remove
+			head.trigger.notify();
+			removeScheduledTrigger(head);
+		}
 	}
 	
 	/**
-	 * Process all ready events by repeatedly calling processReady()
-	 * Runs while the list has events.
-	 * Handles event chaining: events scheduled during execution are processed
-	 * as traversal continues through the list.
+	 * Process all pending triggers until list is empty
 	 */
-	void processEvents()
+	static void processAll()
 	{
 		while (head != null)
 		{
@@ -208,23 +437,23 @@ class EventScheduler
 	}
 	
 	/**
-	 * Check if there are any pending events
+	 * Check if there are pending triggers
 	 */
-	bool hasEvents()
+	static bool hasPendingTriggers()
 	{
 		return head != null;
 	}
 	
 	/**
-	 * Get next event's execution time (microseconds)
+	 * Get next trigger's execution time
 	 */
-	long nextEventTimeUs()
+	static long nextTriggerTimeUs()
 	{
 		if (head == null)
 			return long.max;
 		
 		long nextTime = long.max;
-		ScheduledEvent* node = head;
+		ScheduledTrigger* node = head;
 		
 		do
 		{
@@ -237,18 +466,15 @@ class EventScheduler
 	}
 	
 	/**
-	 * Clear all events
+	 * Clear all pending triggers
 	 */
-	void clear()
+	static void clear()
 	{
 		while (head != null)
 		{
-			ScheduledEvent* next = head.next;
-			removeEvent(head);
-			// removeEvent updates head, so we continue with what's left
-			// No comparison needed; the while condition handles empty list
+			ScheduledTrigger* next = head.next;
+			removeScheduledTrigger(head);
 		}
-		// head is already null from removeEvent, but be explicit
 		head = null;
 		current = null;
 	}

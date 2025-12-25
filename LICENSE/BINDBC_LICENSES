@@ -2,11 +2,12 @@ BindBC Library Licenses
 =======================
 
 The BindBC libraries used in this project are licensed under the Boost Software License.
+These libraries provide bindings to the following native libraries:
 
 Libraries:
-- bindbc-glfw (GLFW bindings)
-- bindbc-opengl (OpenGL bindings)
-- bindbc-openal (OpenAL bindings)
+- bindbc-glfw (GLFW bindings) - See LICENSE/GLFW
+- bindbc-opengl (OpenGL bindings) - See LICENSE/OpenGL
+- bindbc-openal (OpenAL bindings) - See LICENSE/OpenAL
 
 See: https://github.com/BindBC for each library's license
 

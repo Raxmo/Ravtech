@@ -1,0 +1,25 @@
+OpenAL License
+==============
+
+OpenAL is provided under the LGPL (GNU Lesser General Public License)
+
+LGPL License Summary:
+The GNU Lesser General Public License (LGPL) allows proprietary use
+while requiring that:
+- Modifications to OpenAL source code be made available
+- The library can be linked against proprietary applications
+- A copy of the LGPL license be provided with distributions
+
+For the full LGPL license text, see:
+https://www.gnu.org/licenses/lgpl-3.0.html
+
+OpenAL Official Repository:
+https://github.com/kcat/openal-soft
+
+License File:
+The full LGPL license text is available in the OpenAL-Soft repository.
+
+Additional Notes:
+- OpenAL is widely used for cross-platform audio
+- OpenAL Soft is an open-source implementation
+- Some platforms provide proprietary OpenAL implementations

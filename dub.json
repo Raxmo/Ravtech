@@ -26,6 +26,13 @@
 			"name": "benchmark",
 			"targetType": "executable",
 			"excludedSourceFiles": ["source/main.d", "source/app.d", "source/input.d"]
+		},
+		{
+			"name": "unittest",
+			"targetType": "executable",
+			"mainSourceFile": "../Tests/main.d",
+			"sourcePaths": ["source", "../Tests"],
+			"excludedSourceFiles": ["source/main.d", "source/app.d", "source/input.d", "source/window.d"]
 		}
 	]
 }

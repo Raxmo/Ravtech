@@ -1,0 +1,19 @@
+OpenGL License
+==============
+
+OpenGL is a trademark of Khronos Group Inc.
+
+The OpenGL specification is governed by the Khronos Group.
+OpenGL implementations may vary by vendor (Intel, NVIDIA, AMD, Apple, etc.)
+
+Khronos Group License:
+- OpenGL specifications are available under the Khronos Group license
+- See: https://www.khronos.org/opengl/
+
+Vendor Implementations:
+- Individual vendors (NVIDIA, AMD, Intel, Apple) provide OpenGL drivers
+- Each vendor's driver is subject to their respective licensing terms
+- Typically provided as proprietary binary drivers
+
+For more information on OpenGL licensing:
+https://www.khronos.org/opengl/
