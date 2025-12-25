@@ -304,7 +304,6 @@ struct ScheduledTrigger
 static class TriggerScheduler
 {
 	private static ScheduledTrigger* head;
-	private static ScheduledTrigger* current;
 	
 	/**
 	 * Schedule a trigger for execution at an absolute time (sorted insertion)
@@ -343,16 +342,12 @@ static class TriggerScheduler
 		{
 			// Only node in list
 			head = null;
-			current = null;
 		}
 		else
 		{
 			// Unlink the node
 			node.prev.next = node.next;
 			node.next.prev = node.prev;
-			
-			if (current == node)
-				current = node.next;
 			
 			if (head == node)
 				head = node.next;
@@ -373,7 +368,6 @@ static class TriggerScheduler
 			head = node;
 			node.prev = node;
 			node.next = node;
-			current = null;
 			return;
 		}
 		
@@ -476,6 +470,5 @@ static class TriggerScheduler
 			removeScheduledTrigger(head);
 		}
 		head = null;
-		current = null;
 	}
 }
