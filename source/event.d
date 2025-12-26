@@ -311,7 +311,7 @@ static class TriggerScheduler
 	private static ScheduledTrigger* head;
 	private static YieldFn defaultYieldFn;
 	private static TimingObserver timingObserver;
-	static immutable long ANTI_JITTER_FACTOR = 2;  // Divisor for jitter compensation convergence
+	static immutable long ANTI_JITTER_FACTOR = 4;  // Divisor for jitter compensation convergence
 	
 	/**
 	 * Set the default yield function for scheduler fibers
