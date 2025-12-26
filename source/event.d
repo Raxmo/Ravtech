@@ -109,7 +109,7 @@ final class HierarchicalContainer(T) : ListenerContainer!T
 			}
 		}
 	}
-	
+
 	void fire(Event!T event)
 	{
 		final switch (propagationType)
@@ -311,6 +311,7 @@ static class TriggerScheduler
 	private static ScheduledTrigger* head;
 	private static YieldFn defaultYieldFn;
 	private static TimingObserver timingObserver;
+	private static long antiJitterFactor = 2;  // Divisor for jitter compensation convergence
 	
 	/**
 	 * Set the default yield function for scheduler fibers
@@ -327,6 +328,18 @@ static class TriggerScheduler
 	static void setTimingObserver(TimingObserver observer)
 	{
 		timingObserver = observer;
+	}
+	
+	/**
+	 * Set anti-jitter divisor for convergence speed
+	 * Larger factor = faster convergence, more sensitive to variations
+	 * Default: 2 (exponential convergence in ~10 triggers)
+	 * Try: 4 for slower convergence, 1 for immediate correction (risky)
+	 */
+	static void setAntiJitterFactor(long factor)
+	{
+		if (factor > 0)
+			antiJitterFactor = factor;
 	}
 	
 	/**
@@ -507,6 +520,8 @@ static class TriggerScheduler
 	 * 
 	 * Uses predictive jitter compensation: measures actual vs scheduled time
 	 * and applies accumulated offset to adjust future yields.
+	 * First trigger directly sets offset to measured delta for immediate adaptation.
+	 * Subsequent triggers use exponential convergence: offset += delta / antiJitterFactor
 	 * 
 	 * yieldFn: callback that yields control for given microseconds
 	 *          (implementation depends on fiber/coroutine system)
@@ -514,6 +529,7 @@ static class TriggerScheduler
 	static void run(YieldFn yieldFn)
 	{
 		long offsetUs = 0;  // Accumulated jitter compensation
+		bool isFirstTrigger = true;
 		
 		while (head != null)
 		{
@@ -532,8 +548,16 @@ static class TriggerScheduler
 			long actualExecutionTimeUs = TimeUtils.currTimeUs();
 			long deltaUs = actualExecutionTimeUs - scheduledTimeUs;
 			
-			// Update offset: add half the delta for exponential convergence
-			offsetUs = offsetUs + (deltaUs / 2);
+			// Update offset: first trigger sets directly, then exponential convergence
+			if (isFirstTrigger)
+			{
+				offsetUs = deltaUs;
+				isFirstTrigger = false;
+			}
+			else
+			{
+				offsetUs = offsetUs + (deltaUs / antiJitterFactor);
+			}
 			
 			// Notify observer of timing data
 			if (timingObserver)
