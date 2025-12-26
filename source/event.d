@@ -311,7 +311,7 @@ static class TriggerScheduler
 	private static ScheduledTrigger* head;
 	private static YieldFn defaultYieldFn;
 	private static TimingObserver timingObserver;
-	private static long antiJitterFactor = 2;  // Divisor for jitter compensation convergence
+	static immutable long ANTI_JITTER_FACTOR = 2;  // Divisor for jitter compensation convergence
 	
 	/**
 	 * Set the default yield function for scheduler fibers
@@ -328,18 +328,6 @@ static class TriggerScheduler
 	static void setTimingObserver(TimingObserver observer)
 	{
 		timingObserver = observer;
-	}
-	
-	/**
-	 * Set anti-jitter divisor for convergence speed
-	 * Larger factor = faster convergence, more sensitive to variations
-	 * Default: 2 (exponential convergence in ~10 triggers)
-	 * Try: 4 for slower convergence, 1 for immediate correction (risky)
-	 */
-	static void setAntiJitterFactor(long factor)
-	{
-		if (factor > 0)
-			antiJitterFactor = factor;
 	}
 	
 	/**
@@ -556,7 +544,7 @@ static class TriggerScheduler
 			}
 			else
 			{
-				offsetUs = offsetUs + (deltaUs / antiJitterFactor);
+				offsetUs = offsetUs + (deltaUs / ANTI_JITTER_FACTOR);
 			}
 			
 			// Notify observer of timing data
