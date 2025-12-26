@@ -300,16 +300,43 @@ struct ScheduledTrigger
  * Single-threaded, microsecond precision event execution.
  * Uses circular doubly-linked list for O(1) removal and efficient traversal.
  * Type-agnostic: works with all trigger types through ITrigger interface.
+ * 
+ * Runs as a fiber/coroutine: executes triggers on time with cooperative yields.
  */
 static class TriggerScheduler
 {
+	alias YieldFn = void delegate(long delayUs);
+	alias TimingObserver = void delegate(long scheduledTimeUs, long actualTimeUs, long offsetUs);
+	
 	private static ScheduledTrigger* head;
+	private static YieldFn defaultYieldFn;
+	private static TimingObserver timingObserver;
+	
+	/**
+	 * Set the default yield function for scheduler fibers
+	 */
+	static void setDefaultYield(YieldFn yieldFn)
+	{
+		defaultYieldFn = yieldFn;
+	}
+	
+	/**
+	 * Set timing observer for jitter measurement
+	 * Called after each trigger executes with: scheduled time, actual time, offset
+	 */
+	static void setTimingObserver(TimingObserver observer)
+	{
+		timingObserver = observer;
+	}
 	
 	/**
 	 * Schedule a trigger for execution at an absolute time (sorted insertion)
+	 * Spawns a scheduler fiber on-demand when the pool becomes non-empty
 	 */
 	static ScheduledTrigger* scheduleTrigger(ITrigger trigger, long executeTimeUs)
 	{
+		bool wasEmpty = (head == null);
+		
 		ScheduledTrigger* scheduled = new ScheduledTrigger();
 		scheduled.trigger = trigger;
 		scheduled.executeTimeUs = executeTimeUs;
@@ -317,6 +344,15 @@ static class TriggerScheduler
 		scheduled.next = null;
 		
 		insertNodeSorted(scheduled);
+		
+		// Spawn scheduler fiber if pool was empty (became non-empty after insertion)
+		if (wasEmpty && defaultYieldFn)
+		{
+			Fiber schedulerFiber = new Fiber(() {
+				TriggerScheduler.run(defaultYieldFn);
+			});
+			schedulerFiber.call();  // Start immediately
+		}
 		
 		return scheduled;
 	}
@@ -327,6 +363,7 @@ static class TriggerScheduler
 	static ScheduledTrigger* scheduleTrigger(ITrigger trigger, long delayUs, bool isDelay)
 	{
 		long executeTimeUs = TimeUtils.currTimeUs() + delayUs;
+		// Note: The overload above handles fiber resumption
 		return scheduleTrigger(trigger, executeTimeUs);
 	}
 	
@@ -439,24 +476,13 @@ static class TriggerScheduler
 	}
 	
 	/**
-	 * Get next trigger's execution time
+	 * Get next trigger's execution time (head of sorted list)
 	 */
 	static long nextTriggerTimeUs()
 	{
 		if (head == null)
 			return long.max;
-		
-		long nextTime = long.max;
-		ScheduledTrigger* node = head;
-		
-		do
-		{
-			if (node.executeTimeUs < nextTime)
-				nextTime = node.executeTimeUs;
-			node = node.next;
-		} while (node != head);
-		
-		return nextTime;
+		return head.executeTimeUs;
 	}
 	
 	/**
@@ -470,5 +496,51 @@ static class TriggerScheduler
 			removeScheduledTrigger(head);
 		}
 		head = null;
+	}
+	
+	/**
+	 * Execute all pending triggers, managing timing and cooperative yields
+	 * 
+	 * Runs in its own execution context (fiber/coroutine).
+	 * Yields until next trigger is ready, then executes.
+	 * Fire-and-forget: caller schedules, scheduler manages execution.
+	 * 
+	 * Uses predictive jitter compensation: measures actual vs scheduled time
+	 * and applies accumulated offset to adjust future yields.
+	 * 
+	 * yieldFn: callback that yields control for given microseconds
+	 *          (implementation depends on fiber/coroutine system)
+	 */
+	static void run(YieldFn yieldFn)
+	{
+		long offsetUs = 0;  // Accumulated jitter compensation
+		
+		while (head != null)
+		{
+			long scheduledTimeUs = head.executeTimeUs;
+			long nowUs = TimeUtils.currTimeUs();
+			long delayUs = scheduledTimeUs - nowUs;
+			
+			if (delayUs > 0)
+			{
+				// Apply accumulated offset as compensation
+				long compensatedDelayUs = delayUs - offsetUs;
+				yieldFn(compensatedDelayUs);
+			}
+			
+			// Record actual execution time for jitter measurement
+			long actualExecutionTimeUs = TimeUtils.currTimeUs();
+			long deltaUs = actualExecutionTimeUs - scheduledTimeUs;
+			
+			// Update offset: add half the delta for exponential convergence
+			offsetUs = offsetUs + (deltaUs / 2);
+			
+			// Notify observer of timing data
+			if (timingObserver)
+				timingObserver(scheduledTimeUs, actualExecutionTimeUs, deltaUs);
+			
+			// Execute one trigger
+			processReady();
+		}
 	}
 }
