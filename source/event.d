@@ -1,21 +1,8 @@
 import core.thread;
 import core.time;
 import std.stdio;
+import std.algorithm;
 import utils;
-
-/**
- * EventType - Event listener organization and propagation strategy
- * 
- * Pool: Flat, unordered listeners. All fired immediately.
- * Bubble: Hierarchical listeners, child → parent propagation.
- * Trickle: Hierarchical listeners, parent → child propagation.
- */
-enum EventType
-{
-	Pool,       // Flat listener collection
-	Bubble,     // Hierarchical, child → parent
-	Trickle     // Hierarchical, parent → child
-}
 
 /**
  * ITrigger - Type-erased trigger interface
@@ -29,179 +16,61 @@ interface ITrigger
 	void notify();
 }
 
-/**
- * ListenerContainer - Abstract interface for listener storage and propagation
- * Generic over payload type T
- */
-interface ListenerContainer(T)
-{
-	alias ListenerDelegate = void delegate(Event!T event);
-	
-	void addListener(ListenerDelegate listener);
-	void removeListener(ListenerDelegate listener);
-	void fire(Event!T event);
-}
+
 
 /**
- * HierarchicalListener - Node in the listener tree
- */
-final class HierarchicalListener(T)
-{
-	alias ListenerDelegate = void delegate(Event!T event);
-	
-	ListenerDelegate callback;
-	HierarchicalListener!T parent;
-	HierarchicalListener!T[] children;
-	
-	this(ListenerDelegate cb)
-	{
-		this.callback = cb;
-		this.parent = null;
-	}
-	
-	void addChild(HierarchicalListener!T child)
-	{
-		child.parent = this;
-		children ~= child;
-	}
-	
-	void removeChild(HierarchicalListener!T child)
-	{
-		foreach (i, c; children)
-		{
-			if (c == child)
-			{
-				children = children[0 .. i] ~ children[i + 1 .. $];
-				return;
-			}
-		}
-	}
-}
-
-/**
- * HierarchicalContainer - Listener tree with configurable propagation
- */
-final class HierarchicalContainer(T) : ListenerContainer!T
-{
-	alias ListenerDelegate = void delegate(Event!T event);
-	
-	private EventType propagationType;
-	private HierarchicalListener!T[] roots;
-	this(EventType propType)
-	{
-		this.propagationType = propType;
-	}
-	
-	void addListener(ListenerDelegate listener)
-	{
-		HierarchicalListener!T node = new HierarchicalListener!T(listener);
-		roots ~= node;
-	}
-	
-	void removeListener(ListenerDelegate listener)
-	{
-		foreach (i, root; roots)
-		{
-			if (root.callback == listener)
-			{
-				roots = roots[0 .. i] ~ roots[i + 1 .. $];
-				return;
-			}
-		}
-	}
-
-	void fire(Event!T event)
-	{
-		final switch (propagationType)
-		{
-			case EventType.Pool:
-				// Pool: Fire roots only, no propagation to children
-				foreach (root; roots)
-				{
-					if (root.callback)
-						root.callback(event);
-				}
-				break;
-			case EventType.Trickle:
-				// Trickle: Parent → Child propagation
-				foreach (root; roots)
-					trickleDown(root, event);
-				break;
-			case EventType.Bubble:
-				// Bubble: Child → Parent propagation
-				foreach (root; roots)
-					bubbleUp(root, event);
-				break;
-		}
-	}
-	
-	private void trickleDown(HierarchicalListener!T node, Event!T event)
-	{
-		if (node.callback)
-			node.callback(event);
-		
-		if (event.consumed)
-			return;
-		
-		foreach (child; node.children)
-			trickleDown(child, event);
-	}
-
-	private void bubbleUp(HierarchicalListener!T node, Event!T event)
-	{
-		foreach (child; node.children)
-			bubbleUp(child, event);
-		
-		if (event.consumed)
-			return;
-		
-		if (node.callback)
-			node.callback(event);	
-	}
-}
-
-/**
- * Event - Reusable, stateful event with typed payload and listeners
+ * Event - Simple stateful event with typed payload and flat listener pool
  * 
- * Fires listeners using a container that handles storage and propagation.
- * Payload is set by Trigger before fire() and holds type-safe data for listeners.
- * T: Payload type (use void for no payload)
+ * Events are notification delivery: fire() calls all listeners.
+ * Propagation (hierarchical, conditional, etc.) is caller responsibility.
+ * 
+ * T: Payload type
  */
 class Event(T)
 {
-	protected string name;
-	protected ListenerContainer!T container;
-	protected T payload;
-	protected bool consumed = false;
+	alias ListenerDelegate = void delegate(Event!T);
 	
-	this(string name, EventType type)
+	protected string name;
+	protected ListenerDelegate[] listeners;
+	protected T payload;
+	
+	this(string name)
 	{
 		this.name = name;
-		this.container = new HierarchicalContainer!T(type);
 	}
 	
 	/**
 	 * Add a listener callback
 	 */
-	void addListener(void delegate(Event!T) listener)
+	void addListener(ListenerDelegate listener)
 	{
-		container.addListener(listener);
+		listeners ~= listener;
 	}
 	
 	/**
 	 * Remove a listener callback
 	 */
-	void removeListener(void delegate(Event!T) listener)
+	void removeListener(ListenerDelegate listener)
 	{
-		container.removeListener(listener);
+		foreach (i, l; listeners)
+		{
+			if (l == listener)
+			{
+				listeners = listeners[0 .. i] ~ listeners[i + 1 .. $];
+				return;
+			}
+		}
 	}
 	
 	/**
-	 * Fire this event, invoking all listeners via container
+	 * Fire this event, invoking all listeners
 	 */
 	void fire()
 	{
-		container.fire(this);
+		foreach (listener; listeners)
+		{
+			listener(this);
+		}
 	}
 	
 	/**
@@ -211,7 +80,6 @@ class Event(T)
 	void notifyWithPayload(T payload)
 	{
 		this.payload = payload;
-		this.consumed = false;  // Reset consumption flag
 		fire();
 	}
 	
@@ -221,22 +89,6 @@ class Event(T)
 	T getPayload() const
 	{
 		return payload;
-	}
-	
-	/**
-	 * Mark event as consumed to stop propagation
-	 */
-	void consume()
-	{
-		consumed = true;
-	}
-	
-	/**
-	 * Check if event was consumed
-	 */
-	bool isConsumed() const
-	{
-		return consumed;
 	}
 	
 	@property string getName() const { return name; }
@@ -294,48 +146,105 @@ struct ScheduledTrigger
 	}
 }
 
+debug(EventJitter)
+{
+	/// Jitter metrics collected during trigger execution (debug builds only)
+	struct JitterMetrics
+	{
+		long[] deltas;           // Individual delta measurements (µs)
+		long minDelta = long.max;
+		long maxDelta = long.min;
+		long sumDelta = 0;
+		ulong triggersProcessed = 0;
+		
+		/// Get average delta in microseconds
+		long avgDelta() const
+		{
+			return triggersProcessed > 0 ? sumDelta / triggersProcessed : 0;
+		}
+		
+		/// Reset metrics
+		void reset()
+		{
+			deltas = [];
+			minDelta = long.max;
+			maxDelta = long.min;
+			sumDelta = 0;
+			triggersProcessed = 0;
+		}
+	}
+	__gshared JitterMetrics jitterMetrics;
+}
+
 /**
  * TriggerScheduler - Global timeline managing all scheduled triggers
  * 
+ * OWNERSHIP MODEL:
+ * ================
+ * The scheduler owns COMPLETE execution timing. Callers have zero responsibility:
+ * 
+ * 1. SCHEDULING (Caller's only job):
+ *    - Call scheduleTrigger(trigger, timeUs)
+ *    - Scheduler enqueues the trigger
+ *    - Returns immediately (fire-and-forget)
+ * 
+ * 2. EXECUTION (Scheduler's responsibility):
+ *    - Scheduler spawns a fiber when queue becomes non-empty
+ *    - Fiber calls run(yieldFn) to execute all pending triggers
+ *    - run() manages timing, yields, jitter compensation
+ *    - Fiber exits when queue empties
+ *    - On next scheduleTrigger() with empty queue, new fiber spawns
+ * 
+ * CONSEQUENCES:
+ * =============
+ * - Callers cannot intercept execution (no "schedule → do stuff → execute" window)
+ * - Callers cannot prevent execution via clear() after scheduling
+ * - Timing is entirely scheduler-controlled, independent of caller context
+ * - Multiple fibers may run in parallel if scheduleTrigger is called from different contexts
+ * 
+ * IMPLEMENTATION:
+ * ===============
  * Single-threaded, microsecond precision event execution.
  * Uses circular doubly-linked list for O(1) removal and efficient traversal.
  * Type-agnostic: works with all trigger types through ITrigger interface.
  * 
  * Runs as a fiber/coroutine: executes triggers on time with cooperative yields.
+ * Fiber lifecycle: spawned on demand, dies when queue empties, respawned on next schedule.
  */
 static class TriggerScheduler
 {
 	alias YieldFn = void delegate(long delayUs);
-	alias TimingObserver = void delegate(long scheduledTimeUs, long actualTimeUs, long offsetUs);
 	
 	private static ScheduledTrigger* head;
 	private static YieldFn defaultYieldFn;
-	private static TimingObserver timingObserver;
 	static immutable long ANTI_JITTER_FACTOR = 4;  // Divisor for jitter compensation convergence
 	
 	/**
-	 * Set the default yield function for scheduler fibers
+	 * Set the yield function for scheduler fibers
+	 * Must be called before scheduling any triggers
+	 * Configures how the scheduler waits between trigger execution
 	 */
-	static void setDefaultYield(YieldFn yieldFn)
+	static void setYield(YieldFn yieldFn)
 	{
 		defaultYieldFn = yieldFn;
 	}
 	
 	/**
-	 * Set timing observer for jitter measurement
-	 * Called after each trigger executes with: scheduled time, actual time, offset
-	 */
-	static void setTimingObserver(TimingObserver observer)
-	{
-		timingObserver = observer;
-	}
-	
-	/**
-	 * Schedule a trigger for execution at an absolute time (sorted insertion)
-	 * Spawns a scheduler fiber on-demand when the pool becomes non-empty
+	 * Schedule a trigger for execution at an absolute time
+	 * 
+	 * Fire-and-forget API: caller enqueues, scheduler manages execution.
+	 * If queue was empty, spawns a fiber to run the scheduler loop.
+	 * Fiber executes all pending triggers, then exits.
+	 * 
+	 * Requires setYield() to be called first to configure timing strategy.
+	 * 
+	 * Returns: ScheduledTrigger* for reference (can call cancel() on it)
+	 * Side effects: May spawn a fiber that continues to run asynchronously
 	 */
 	static ScheduledTrigger* scheduleTrigger(ITrigger trigger, long executeTimeUs)
 	{
+		assert(defaultYieldFn !is null, "Must call setYield() before scheduling triggers");
+		
 		bool wasEmpty = (head == null);
 		
 		ScheduledTrigger* scheduled = new ScheduledTrigger();
@@ -346,8 +255,8 @@ static class TriggerScheduler
 		
 		insertNodeSorted(scheduled);
 		
-		// Spawn scheduler fiber if pool was empty (became non-empty after insertion)
-		if (wasEmpty && defaultYieldFn)
+		// Spawn fiber if pool was empty (became non-empty after insertion)
+		if (wasEmpty)
 		{
 			Fiber schedulerFiber = new Fiber(() {
 				TriggerScheduler.run(defaultYieldFn);
@@ -500,19 +409,29 @@ static class TriggerScheduler
 	}
 	
 	/**
-	 * Execute all pending triggers, managing timing and cooperative yields
+	 * SCHEDULER'S EXECUTION LOOP - Internal responsibility
 	 * 
-	 * Runs in its own execution context (fiber/coroutine).
-	 * Yields until next trigger is ready, then executes.
-	 * Fire-and-forget: caller schedules, scheduler manages execution.
+	 * Called by spawned fiber to execute all pending triggers on time.
+	 * This is where timing precision and jitter compensation happen.
 	 * 
-	 * Uses predictive jitter compensation: measures actual vs scheduled time
-	 * and applies accumulated offset to adjust future yields.
-	 * First trigger directly sets offset to measured delta for immediate adaptation.
-	 * Subsequent triggers use exponential convergence: offset += delta / antiJitterFactor
+	 * ALGORITHM:
+	 * 1. Loop while queue is non-empty:
+	 *    2. Calculate delay: nextTriggerTime - now
+	 *    3. Apply jitter compensation: yield(delay - offset)
+	 *    4. Execute next trigger, measure actual execution time
+	 *    5. Update offset: first trigger sets directly, rest converge via delta/FACTOR
+	 *    6. Notify timing observer (for diagnostics)
+	 *    7. Remove trigger from queue and repeat
 	 * 
-	 * yieldFn: callback that yields control for given microseconds
-	 *          (implementation depends on fiber/coroutine system)
+	 * JITTER COMPENSATION:
+	 * Predictive offset accumulation based on actual vs scheduled execution time.
+	 * First trigger directly sets offset to measured delta.
+	 * Subsequent triggers converge exponentially: offset += delta / ANTI_JITTER_FACTOR
+	 * Converges to near-zero microsecond precision within ~10-30 triggers.
+	 * 
+	 * CALLER RESPONSIBILITY:
+	 * yieldFn must be set via setYield() before calling run()
+	 * yieldFn implementation determines precision vs CPU usage tradeoff
 	 */
 	static void run(YieldFn yieldFn)
 	{
@@ -547,9 +466,15 @@ static class TriggerScheduler
 				offsetUs = offsetUs + (deltaUs / ANTI_JITTER_FACTOR);
 			}
 			
-			// Notify observer of timing data
-			if (timingObserver)
-				timingObserver(scheduledTimeUs, actualExecutionTimeUs, deltaUs);
+			// Collect jitter metrics (debug builds only)
+			debug(EventJitter)
+			{
+				jitterMetrics.deltas ~= deltaUs;
+				jitterMetrics.minDelta = min(jitterMetrics.minDelta, deltaUs);
+				jitterMetrics.maxDelta = max(jitterMetrics.maxDelta, deltaUs);
+				jitterMetrics.sumDelta += deltaUs;
+				jitterMetrics.triggersProcessed++;
+			}
 			
 			// Execute one trigger
 			processReady();
