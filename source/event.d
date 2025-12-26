@@ -19,11 +19,37 @@ interface ITrigger
 
 
 /**
+ * ListenerHandle - Opaque handle to a registered listener
+ * 
+ * Holds the index into the event's listener array.
+ * Returned by addListener() and passed to removeListener().
+ */
+class ListenerHandle
+{
+	protected size_t index;
+	protected bool valid;
+	
+	this(size_t idx)
+	{
+		index = idx;
+		valid = true;
+	}
+	
+	@property size_t getIndex() const { return index; }
+	@property bool isValid() const { return valid; }
+	
+	void setIndex(size_t idx) { index = idx; }
+	void invalidate() { valid = false; }
+}
+
+/**
  * Event - Simple stateful event with typed payload and flat listener pool
  * 
  * Events are notification delivery: fire() calls all listeners.
  * Propagation (hierarchical, conditional, etc.) is caller responsibility.
  * The event object itself is the identity; no string name needed.
+ * 
+ * Listener removal is O(1) via swap-and-pop with handle-based indexing.
  * 
  * T: Payload type
  */
@@ -32,6 +58,7 @@ class Event(T)
 	alias ListenerDelegate = void delegate(Event!T);
 	
 	protected ListenerDelegate[] listeners;
+	protected ListenerHandle[] handles;  // Parallel array of handles
 	protected T payload;
 	
 	this()
@@ -40,25 +67,47 @@ class Event(T)
 	
 	/**
 	 * Add a listener callback
+	 * Returns a handle for O(1) removal
+	 * O(1) amortized
 	 */
-	void addListener(ListenerDelegate listener)
+	ListenerHandle addListener(ListenerDelegate listener)
 	{
+		auto handle = new ListenerHandle(listeners.length);
 		listeners ~= listener;
+		handles ~= handle;
+		return handle;
 	}
 	
 	/**
-	 * Remove a listener callback
+	 * Remove a listener callback via handle
+	 * O(1) swap-and-pop: swap with last, update displaced handle's index, pop
 	 */
-	void removeListener(ListenerDelegate listener)
+	void removeListener(ListenerHandle handle)
 	{
-		foreach (i, l; listeners)
+		if (!handle.isValid())
+			return;
+		
+		size_t idx = handle.getIndex();
+		if (idx >= listeners.length)
+			return;
+		
+		// Swap with last element
+		if (idx < listeners.length - 1)
 		{
-			if (l == listener)
-			{
-				listeners = listeners[0 .. i] ~ listeners[i + 1 .. $];
-				return;
-			}
+			// Move last to current position
+			listeners[idx] = listeners[$ - 1];
+			handles[idx] = handles[$ - 1];
+			
+			// Update the handle we just moved with its new index
+			handles[idx].setIndex(idx);
 		}
+		
+		// Pop the last element
+		listeners.length--;
+		handles.length--;
+		
+		// Invalidate the removed handle
+		handle.invalidate();
 	}
 	
 	/**
