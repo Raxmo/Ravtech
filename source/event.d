@@ -23,6 +23,7 @@ interface ITrigger
  * 
  * Events are notification delivery: fire() calls all listeners.
  * Propagation (hierarchical, conditional, etc.) is caller responsibility.
+ * The event object itself is the identity; no string name needed.
  * 
  * T: Payload type
  */
@@ -30,13 +31,11 @@ class Event(T)
 {
 	alias ListenerDelegate = void delegate(Event!T);
 	
-	protected string name;
 	protected ListenerDelegate[] listeners;
 	protected T payload;
 	
-	this(string name)
+	this()
 	{
-		this.name = name;
 	}
 	
 	/**
@@ -90,8 +89,6 @@ class Event(T)
 	{
 		return payload;
 	}
-	
-	@property string getName() const { return name; }
 }
 
 /**
