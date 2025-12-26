@@ -394,10 +394,10 @@ static class TriggerScheduler
 	}
 	
 	/**
-	 * Internal: Default busy-spin yield for microsecond precision
+	 * Internal: Busy-spin yield for microsecond precision
 	 * Spins until target time is reached.
 	 */
-	private static void defaultYield(long delayUs)
+	private static void yieldUntil(long delayUs)
 	{
 		if (delayUs > 0)
 		{
@@ -446,7 +446,7 @@ static class TriggerScheduler
 			{
 				// Apply accumulated offset as compensation
 				long compensatedDelayUs = delayUs - offsetUs;
-				defaultYield(compensatedDelayUs);
+				yieldUntil(compensatedDelayUs);
 			}
 			
 			// Record actual execution time for jitter measurement
