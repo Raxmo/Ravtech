@@ -213,21 +213,8 @@ debug(EventJitter)
  */
 static class TriggerScheduler
 {
-	alias YieldFn = void delegate(long delayUs);
-	
 	private static ScheduledTrigger* head;
-	private static YieldFn defaultYieldFn;
 	static immutable long ANTI_JITTER_FACTOR = 4;  // Divisor for jitter compensation convergence
-	
-	/**
-	 * Set the yield function for scheduler fibers
-	 * Must be called before scheduling any triggers
-	 * Configures how the scheduler waits between trigger execution
-	 */
-	static void setYield(YieldFn yieldFn)
-	{
-		defaultYieldFn = yieldFn;
-	}
 	
 	/**
 	 * Schedule a trigger for execution at an absolute time
@@ -236,15 +223,13 @@ static class TriggerScheduler
 	 * If queue was empty, spawns a fiber to run the scheduler loop.
 	 * Fiber executes all pending triggers, then exits.
 	 * 
-	 * Requires setYield() to be called first to configure timing strategy.
+	 * Scheduler owns all aspects of execution timing and fiber lifecycle.
 	 * 
 	 * Returns: ScheduledTrigger* for reference (can call cancel() on it)
 	 * Side effects: May spawn a fiber that continues to run asynchronously
 	 */
 	static ScheduledTrigger* scheduleTrigger(ITrigger trigger, long executeTimeUs)
 	{
-		assert(defaultYieldFn !is null, "Must call setYield() before scheduling triggers");
-		
 		bool wasEmpty = (head == null);
 		
 		ScheduledTrigger* scheduled = new ScheduledTrigger();
@@ -259,7 +244,7 @@ static class TriggerScheduler
 		if (wasEmpty)
 		{
 			Fiber schedulerFiber = new Fiber(() {
-				TriggerScheduler.run(defaultYieldFn);
+				TriggerScheduler.executeScheduled();
 			});
 			schedulerFiber.call();  // Start immediately
 		}
@@ -409,9 +394,23 @@ static class TriggerScheduler
 	}
 	
 	/**
-	 * SCHEDULER'S EXECUTION LOOP - Internal responsibility
+	 * Internal: Default busy-spin yield for microsecond precision
+	 * Spins until target time is reached.
+	 */
+	private static void defaultYield(long delayUs)
+	{
+		if (delayUs > 0)
+		{
+			long targetUs = TimeUtils.currTimeUs() + delayUs;
+			while (TimeUtils.currTimeUs() < targetUs) { }
+		}
+	}
+	
+	/**
+	 * SCHEDULER'S EXECUTION FIBER - Internal responsibility
 	 * 
 	 * Called by spawned fiber to execute all pending triggers on time.
+	 * Scheduler owns complete control over fiber lifecycle and yielding behavior.
 	 * This is where timing precision and jitter compensation happen.
 	 * 
 	 * ALGORITHM:
@@ -420,8 +419,7 @@ static class TriggerScheduler
 	 *    3. Apply jitter compensation: yield(delay - offset)
 	 *    4. Execute next trigger, measure actual execution time
 	 *    5. Update offset: first trigger sets directly, rest converge via delta/FACTOR
-	 *    6. Notify timing observer (for diagnostics)
-	 *    7. Remove trigger from queue and repeat
+	 *    6. Remove trigger from queue and repeat
 	 * 
 	 * JITTER COMPENSATION:
 	 * Predictive offset accumulation based on actual vs scheduled execution time.
@@ -429,11 +427,11 @@ static class TriggerScheduler
 	 * Subsequent triggers converge exponentially: offset += delta / ANTI_JITTER_FACTOR
 	 * Converges to near-zero microsecond precision within ~10-30 triggers.
 	 * 
-	 * CALLER RESPONSIBILITY:
-	 * yieldFn must be set via setYield() before calling run()
-	 * yieldFn implementation determines precision vs CPU usage tradeoff
+	 * YIELD STRATEGY:
+	 * Uses busy-spin yield to achieve microsecond precision.
+	 * This is the scheduler's internal concern, not exposed to callers.
 	 */
-	static void run(YieldFn yieldFn)
+	private static void executeScheduled()
 	{
 		long offsetUs = 0;  // Accumulated jitter compensation
 		bool isFirstTrigger = true;
@@ -448,7 +446,7 @@ static class TriggerScheduler
 			{
 				// Apply accumulated offset as compensation
 				long compensatedDelayUs = delayUs - offsetUs;
-				yieldFn(compensatedDelayUs);
+				defaultYield(compensatedDelayUs);
 			}
 			
 			// Record actual execution time for jitter measurement
