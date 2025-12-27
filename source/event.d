@@ -183,7 +183,6 @@ debug(EventJitter)
 	struct JitterMetrics
 	{
 		long[] deltas;           // Individual delta measurements (µs)
-		long[] offsets;          // Accumulated offset values (µs)
 		long minDelta = long.max;
 		long maxDelta = long.min;
 		long sumDelta = 0;
@@ -199,7 +198,6 @@ debug(EventJitter)
 		void reset()
 		{
 			deltas = [];
-			offsets = [];
 			minDelta = long.max;
 			maxDelta = long.min;
 			sumDelta = 0;
@@ -248,7 +246,6 @@ interface IScheduler
 abstract class SchedulerBase : IScheduler
 {
 	protected ScheduledTrigger* head;
-	protected long offsetUs = 0;  // Persistent jitter compensation
 	
 	/// Insert a node into sorted position (ascending by executeTimeUs)
 	protected void insertNodeSorted(ScheduledTrigger* node)
@@ -326,7 +323,6 @@ abstract class SchedulerBase : IScheduler
 		{
 			removeScheduledTrigger(head);
 		}
-		offsetUs = 0;  // Reset jitter compensation for next test
 	}
 	
 	/// Execute pending triggers (polymorphic - subclasses define behavior)
@@ -406,37 +402,23 @@ class SchedulerHighP : SchedulerBase
 		debug(EventJitter)
 		{
 			long fiberStart = TimeUtils.currTimeUs();
-			writeln("  [Fiber started at ", fiberStart, "µs, offsetUs=", offsetUs, "µs]");
+			writeln("  [Fiber started at ", fiberStart, "µs]");
 		}
 		
 		while (head != null)
 		{
-			long executeTimeUs = TimeUtils.currTimeUs();
 			long scheduledTimeUs = head.executeTimeUs;
-			long delayUs = scheduledTimeUs - executeTimeUs;
 			
-			if (delayUs > 0)
-			{
-				// Apply accumulated offset as compensation
-				long compensatedDelayUs = delayUs - offsetUs;
-				yieldUntilHighP(compensatedDelayUs);
-			}
+			// Yield to scheduled time (busy-spin for microsecond precision)
+			yieldUntilHighP(scheduledTimeUs);
 			
-			// Measure compensation error at the timing check moment
-			// Delta represents how far off the yield was from target
-			long deltaUs = scheduledTimeUs - executeTimeUs;
+			// Measure actual execution jitter (external system noise: GC, syscalls, etc.)
+			long deltaUs = TimeUtils.currTimeUs() - scheduledTimeUs;
 			
-			// Update offset with 3/4 step convergence (aggressive dampening)
-			// This compensates for OS jitter in the yield mechanism
-			long oldOffsetUs = offsetUs;
-			long offsetDelta = (deltaUs * 3) / 4;
-			offsetUs = oldOffsetUs + offsetDelta;
-			
-			// Collect jitter metrics (debug builds only)
+			// Collect jitter metrics for observation (debug builds only)
 			debug(EventJitter)
 			{
 				jitterMetrics.deltas ~= deltaUs;
-				jitterMetrics.offsets ~= offsetUs;
 				jitterMetrics.minDelta = min(jitterMetrics.minDelta, deltaUs);
 				jitterMetrics.maxDelta = max(jitterMetrics.maxDelta, deltaUs);
 				jitterMetrics.sumDelta += deltaUs;
@@ -448,14 +430,10 @@ class SchedulerHighP : SchedulerBase
 		}
 	}
 	
-	/// Busy-spin yield for microsecond precision
-	private void yieldUntilHighP(long delayUs)
+	/// Busy-spin yield until absolute target time (microsecond precision)
+	private void yieldUntilHighP(long targetTimeUs)
 	{
-		if (delayUs > 0)
-		{
-			long targetUs = TimeUtils.currTimeUs() + delayUs;
-			while (TimeUtils.currTimeUs() < targetUs) { }
-		}
+		while (TimeUtils.currTimeUs() < targetTimeUs) { }
 	}
 	
 	/// Execute next trigger and remove it from the schedule
@@ -529,7 +507,7 @@ class SchedulerLowP : SchedulerBase
 		debug(EventJitter)
 		{
 			long fiberStart = TimeUtils.currTimeUs();
-			writeln("  [LowP Fiber started at ", fiberStart, "µs, offsetUs=", offsetUs, "µs]");
+			writeln("  [LowP Fiber started at ", fiberStart, "µs]");
 		}
 		
 		while (head != null)
@@ -546,19 +524,12 @@ class SchedulerLowP : SchedulerBase
 				Thread.sleep(dur!"msecs"(sleepMs));
 			}
 			
-			// Measure compensation error at the timing check moment
-			long deltaUs = scheduledTimeUs - executeTimeUs;
-			
-			// Update offset with 3/4 step convergence
-			// LowP jitter is dominated by OS sleep granularity, so compensation is limited
-			long oldOffsetUs = offsetUs;
-			long offsetDelta = (deltaUs * 3) / 4;
-			offsetUs = oldOffsetUs + offsetDelta;
+			// Measure actual execution jitter (external system noise)
+			long deltaUs = TimeUtils.currTimeUs() - scheduledTimeUs;
 			
 			debug(EventJitter)
 			{
 				jitterMetrics.deltas ~= deltaUs;
-				jitterMetrics.offsets ~= offsetUs;
 				jitterMetrics.minDelta = min(jitterMetrics.minDelta, deltaUs);
 				jitterMetrics.maxDelta = max(jitterMetrics.maxDelta, deltaUs);
 				jitterMetrics.sumDelta += deltaUs;
