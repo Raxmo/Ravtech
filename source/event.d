@@ -327,7 +327,9 @@ class SchedulerLowRes : IScheduler
 		return scheduleTrigger(trigger, executeTimeUs);
 	}
 	
-	/// Remove a scheduled trigger from the timeline
+	
+  // Will probably have to return to this later as it is likely mallformed now.
+  /// Remove a scheduled trigger from the timeline
 	void removeScheduledTrigger(ScheduledTrigger* node)
 	{
 		if (node == null || head == null)
@@ -374,11 +376,7 @@ class SchedulerLowRes : IScheduler
 			// If trigger not ready yet
 			if (delayUs > 0)
 			{
-				// Sleep fiber until approximately that time
-				long sleepMs = (delayUs + 500) / 1000;  // Round to nearest millisecond
-				Thread.sleep(dur!"msecs"(sleepMs));
-				
-				// Yield control back to main thread
+				// Yield control back to main thread (don't block)
 				Fiber.yield();
 				// Main thread continues...
 				// When main calls scheduleTrigger() again, fiber resumes here
