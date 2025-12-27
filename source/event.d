@@ -369,7 +369,36 @@ class SchedulerHighRes : SchedulerBase
 		if (wasEmpty)
 		{
 			Fiber schedulerFiber = new Fiber(() {
-				this.execInternal();
+				debug(EventJitter)
+				{
+					long fiberStart = TimeUtils.currTimeUs();
+					writeln("  [Fiber started at ", fiberStart, "µs]");
+				}
+				
+				while (head != null)
+				{
+					long scheduledTimeUs = head.executeTimeUs;
+					
+					// Yield to scheduled time (busy-spin for microsecond resolution)
+					while (TimeUtils.currTimeUs() < scheduledTimeUs) { }
+					
+					// Measure actual execution jitter (external system noise: GC, syscalls, etc.)
+					long deltaUs = TimeUtils.currTimeUs() - scheduledTimeUs;
+					
+					// Collect jitter metrics for observation (debug builds only)
+					debug(EventJitter)
+					{
+						jitterMetrics.deltas ~= deltaUs;
+						jitterMetrics.minDelta = min(jitterMetrics.minDelta, deltaUs);
+						jitterMetrics.maxDelta = max(jitterMetrics.maxDelta, deltaUs);
+						jitterMetrics.sumDelta += deltaUs;
+						jitterMetrics.triggersProcessed++;
+					}
+					
+					// Execute trigger and remove from queue
+					head.trigger.notify();
+					removeScheduledTrigger(head);
+				}
 			});
 			schedulerFiber.call();  // Start immediately
 		}
@@ -383,60 +412,39 @@ class SchedulerHighRes : SchedulerBase
 		if (head != null)
 		{
 			Fiber schedulerFiber = new Fiber(() {
-				this.execInternal();
+				debug(EventJitter)
+				{
+					long fiberStart = TimeUtils.currTimeUs();
+					writeln("  [Fiber started at ", fiberStart, "µs]");
+				}
+				
+				while (head != null)
+				{
+					long scheduledTimeUs = head.executeTimeUs;
+					
+					// Yield to scheduled time (busy-spin for microsecond resolution)
+					while (TimeUtils.currTimeUs() < scheduledTimeUs) { }
+					
+					// Measure actual execution jitter (external system noise: GC, syscalls, etc.)
+					long deltaUs = TimeUtils.currTimeUs() - scheduledTimeUs;
+					
+					// Collect jitter metrics for observation (debug builds only)
+					debug(EventJitter)
+					{
+						jitterMetrics.deltas ~= deltaUs;
+						jitterMetrics.minDelta = min(jitterMetrics.minDelta, deltaUs);
+						jitterMetrics.maxDelta = max(jitterMetrics.maxDelta, deltaUs);
+						jitterMetrics.sumDelta += deltaUs;
+						jitterMetrics.triggersProcessed++;
+					}
+					
+					// Execute trigger and remove from queue
+					head.trigger.notify();
+					removeScheduledTrigger(head);
+				}
 			});
 			schedulerFiber.call();
 		}
-	}
-	
-	/// Internal execution loop (runs in fiber context)
-	private void execInternal()
-	{
-		debug(EventJitter)
-		{
-			long fiberStart = TimeUtils.currTimeUs();
-			writeln("  [Fiber started at ", fiberStart, "µs]");
-		}
-		
-		while (head != null)
-		{
-			long scheduledTimeUs = head.executeTimeUs;
-			
-			// Yield to scheduled time (busy-spin for microsecond resolution)
-			yieldUntilHighRes(scheduledTimeUs);
-			
-			// Measure actual execution jitter (external system noise: GC, syscalls, etc.)
-			long deltaUs = TimeUtils.currTimeUs() - scheduledTimeUs;
-			
-			// Collect jitter metrics for observation (debug builds only)
-			debug(EventJitter)
-			{
-				jitterMetrics.deltas ~= deltaUs;
-				jitterMetrics.minDelta = min(jitterMetrics.minDelta, deltaUs);
-				jitterMetrics.maxDelta = max(jitterMetrics.maxDelta, deltaUs);
-				jitterMetrics.sumDelta += deltaUs;
-				jitterMetrics.triggersProcessed++;
-			}
-			
-			// Execute one trigger
-			handleTrigger();
-		}
-	}
-	
-	/// Busy-spin yield until absolute target time (microsecond resolution)
-	private void yieldUntilHighRes(long targetTimeUs)
-	{
-		while (TimeUtils.currTimeUs() < targetTimeUs) { }
-	}
-	
-	/// Execute next trigger and remove it from the schedule
-	private void handleTrigger()
-	{
-		if (head == null)
-			return;
-		
-		head.trigger.notify();
-		removeScheduledTrigger(head);
 	}
 }
 
@@ -470,7 +478,39 @@ class SchedulerLowRes : SchedulerBase
 		if (wasEmpty)
 		{
 			Fiber schedulerFiber = new Fiber(() {
-				this.execInternal();
+				debug(EventJitter)
+				{
+					long fiberStart = TimeUtils.currTimeUs();
+					writeln("  [LowRes Fiber started at ", fiberStart, "µs]");
+				}
+				
+				while (head != null)
+				{
+					long delayUs = head.executeTimeUs - TimeUtils.currTimeUs();
+					
+					// Sleep for the full delay (OS sleep resolution, no busy-spin)
+					// LowRes accepts millisecond-level resolution for negligible CPU cost
+					long sleepMs = (delayUs + 500) / 1000;  // Round to nearest millisecond
+					if (sleepMs > 0)
+					{
+						Thread.sleep(dur!"msecs"(sleepMs));
+					}
+					
+					debug(EventJitter)
+					{
+						// Measure actual execution jitter (external system noise)
+						long deltaUs = TimeUtils.currTimeUs() - head.executeTimeUs;
+						jitterMetrics.deltas ~= deltaUs;
+						jitterMetrics.minDelta = min(jitterMetrics.minDelta, deltaUs);
+						jitterMetrics.maxDelta = max(jitterMetrics.maxDelta, deltaUs);
+						jitterMetrics.sumDelta += deltaUs;
+						jitterMetrics.triggersProcessed++;
+					}
+					
+					// Execute trigger and remove from queue
+					head.trigger.notify();
+					removeScheduledTrigger(head);
+				}
 			});
 			schedulerFiber.call();
 		}
@@ -483,57 +523,42 @@ class SchedulerLowRes : SchedulerBase
 		if (head != null)
 		{
 			Fiber schedulerFiber = new Fiber(() {
-				this.execInternal();
+				debug(EventJitter)
+				{
+					long fiberStart = TimeUtils.currTimeUs();
+					writeln("  [LowRes Fiber started at ", fiberStart, "µs]");
+				}
+				
+				while (head != null)
+				{
+					long delayUs = head.executeTimeUs - TimeUtils.currTimeUs();
+					
+					// Sleep for the full delay (OS sleep resolution, no busy-spin)
+					// LowRes accepts millisecond-level resolution for negligible CPU cost
+					long sleepMs = (delayUs + 500) / 1000;  // Round to nearest millisecond
+					if (sleepMs > 0)
+					{
+						Thread.sleep(dur!"msecs"(sleepMs));
+					}
+					
+					debug(EventJitter)
+					{
+						// Measure actual execution jitter (external system noise)
+						long deltaUs = TimeUtils.currTimeUs() - head.executeTimeUs;
+						jitterMetrics.deltas ~= deltaUs;
+						jitterMetrics.minDelta = min(jitterMetrics.minDelta, deltaUs);
+						jitterMetrics.maxDelta = max(jitterMetrics.maxDelta, deltaUs);
+						jitterMetrics.sumDelta += deltaUs;
+						jitterMetrics.triggersProcessed++;
+					}
+					
+					// Execute trigger and remove from queue
+					head.trigger.notify();
+					removeScheduledTrigger(head);
+				}
 			});
 			schedulerFiber.call();
 		}
-	}
-	
-	private void execInternal()
-	{
-		debug(EventJitter)
-		{
-			long fiberStart = TimeUtils.currTimeUs();
-			writeln("  [LowRes Fiber started at ", fiberStart, "µs]");
-		}
-		
-		while (head != null)
-		{
-			long scheduledTimeUs = head.executeTimeUs;
-			long executeTimeUs = TimeUtils.currTimeUs();
-			long delayUs = scheduledTimeUs - executeTimeUs;
-			
-			// Sleep for the full delay (OS sleep resolution, no busy-spin)
-			// LowRes accepts millisecond-level resolution for negligible CPU cost
-			long sleepMs = (delayUs + 500) / 1000;  // Round to nearest millisecond
-			if (sleepMs > 0)
-			{
-				Thread.sleep(dur!"msecs"(sleepMs));
-			}
-			
-			// Measure actual execution jitter (external system noise)
-			long deltaUs = TimeUtils.currTimeUs() - scheduledTimeUs;
-			
-			debug(EventJitter)
-			{
-				jitterMetrics.deltas ~= deltaUs;
-				jitterMetrics.minDelta = min(jitterMetrics.minDelta, deltaUs);
-				jitterMetrics.maxDelta = max(jitterMetrics.maxDelta, deltaUs);
-				jitterMetrics.sumDelta += deltaUs;
-				jitterMetrics.triggersProcessed++;
-			}
-			
-			handleTrigger();
-		}
-	}
-	
-	private void handleTrigger()
-	{
-		if (head == null)
-			return;
-		
-		head.trigger.notify();
-		removeScheduledTrigger(head);
 	}
 }
 
