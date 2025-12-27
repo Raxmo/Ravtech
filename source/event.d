@@ -4,6 +4,8 @@ import std.stdio;
 import std.algorithm;
 import utils;
 
+alias Thread = core.thread.Thread;
+
 /**
  * ITrigger - Type-erased trigger interface
  * 
@@ -92,7 +94,7 @@ class Event(T)
 		// Pop the last element
 		listeners.length--;
 	}
-	
+
 	/**
 	 * Fire this event, invoking all listeners
 	 */
@@ -132,12 +134,12 @@ class Event(T)
  */
 class Trigger(T) : ITrigger
 {
-	Event!T targetEvent;
+	Event!T _targetEvent;
 	T payload;
 	
 	this(Event!T event, T data)
 	{
-		this.targetEvent = event;
+		this._targetEvent = event;
 		this.payload = data;
 	}
 	
@@ -147,10 +149,10 @@ class Trigger(T) : ITrigger
 	 */
 	void notify()
 	{
-		targetEvent.notifyWithPayload(payload);
+		_targetEvent.notifyWithPayload(payload);
 	}
 	
-	@property Event!T getEvent() { return targetEvent; }
+	@property Event!T event() { return _targetEvent; }
 }
 
 
@@ -208,128 +210,48 @@ debug(EventJitter)
 }
 
 /**
- * TriggerScheduler - Global timeline managing all scheduled triggers
+ * IScheduler - Polymorphic interface for trigger scheduling
  * 
- * OWNERSHIP MODEL:
- * ================
- * The scheduler owns COMPLETE execution timing. Callers have zero responsibility:
- * 
- * 1. SCHEDULING (Caller's only job):
- *    - Call scheduleTrigger(trigger, timeUs)
- *    - Scheduler enqueues the trigger
- *    - Returns immediately (fire-and-forget)
- * 
- * 2. EXECUTION (Scheduler's responsibility):
- *    - Scheduler spawns a fiber when queue becomes non-empty
- *    - Fiber calls run(yieldFn) to execute all pending triggers
- *    - run() manages timing, yields, jitter compensation
- *    - Fiber exits when queue empties
- *    - On next scheduleTrigger() with empty queue, new fiber spawns
- * 
- * CONSEQUENCES:
- * =============
- * - Callers cannot intercept execution (no "schedule → do stuff → execute" window)
- * - Callers cannot prevent execution via clear() after scheduling
- * - Timing is entirely scheduler-controlled, independent of caller context
- * - Multiple fibers may run in parallel if scheduleTrigger is called from different contexts
- * 
- * IMPLEMENTATION:
- * ===============
- * Single-threaded, microsecond precision event execution.
- * Uses circular doubly-linked list for O(1) removal and efficient traversal.
- * Type-agnostic: works with all trigger types through ITrigger interface.
- * 
- * Runs as a fiber/coroutine: executes triggers on time with cooperative yields.
- * Fiber lifecycle: spawned on demand, dies when queue empties, respawned on next schedule.
+ * Different implementations provide different execution semantics:
+ * - SchedulerHighP: Fiber + busy-spin (microsecond precision, high CPU)
+ * - SchedulerLowP: Fiber + system sleep (millisecond precision, low CPU)
+ * - SchedulerPolled: Synchronous polling (frame-rate precision, zero async overhead)
  */
-static class TriggerScheduler
+interface IScheduler
 {
-	private static ScheduledTrigger* head;
-	private static long offsetUs = 0;  // Persistent jitter compensation across fiber spawns
-	// Jitter compensation: offsetUs += (deltaUs * 3) / 4
-	// 3/4 factor: aggressive (~0.75 step), converges in 3-5 triggers
-	// Superior to 4/3 (~1.33): avoids overshoot, handles spikes better
+	/// Schedule trigger for absolute execution time
+	ScheduledTrigger* scheduleTrigger(ITrigger trigger, long executeTimeUs);
 	
-	/**
-	 * Schedule a trigger for execution at an absolute time
-	 * 
-	 * Fire-and-forget API: caller enqueues, scheduler manages execution.
-	 * If queue was empty, spawns a fiber to run the scheduler loop.
-	 * Fiber executes all pending triggers, then exits.
-	 * 
-	 * Scheduler owns all aspects of execution timing and fiber lifecycle.
-	 * 
-	 * Returns: ScheduledTrigger* for reference (can call cancel() on it)
-	 * Side effects: May spawn a fiber that continues to run asynchronously
-	 */
-	static ScheduledTrigger* scheduleTrigger(ITrigger trigger, long executeTimeUs)
-	{
-		bool wasEmpty = (head == null);
-		
-		ScheduledTrigger* scheduled = new ScheduledTrigger();
-		scheduled.trigger = trigger;
-		scheduled.executeTimeUs = executeTimeUs;
-		scheduled.prev = null;
-		scheduled.next = null;
-		
-		insertNodeSorted(scheduled);
-		
-		// Spawn fiber if pool was empty (became non-empty after insertion)
-		if (wasEmpty)
-		{
-			Fiber schedulerFiber = new Fiber(() {
-				TriggerScheduler.executeScheduled();
-			});
-			schedulerFiber.call();  // Start immediately
-		}
-		
-		return scheduled;
-	}
+	/// Schedule trigger with relative delay from now
+	ScheduledTrigger* delayTrigger(ITrigger trigger, long delayUs);
 	
-	/**
-	 * Delay a trigger for a specified duration from now
-	 */
-	static ScheduledTrigger* delayTrigger(ITrigger trigger, long delayUs)
-	{
-		long executeTimeUs = TimeUtils.currTimeUs() + delayUs;
-		return scheduleTrigger(trigger, executeTimeUs);
-	}
+	/// Remove a scheduled trigger from the timeline
+	void removeScheduledTrigger(ScheduledTrigger* node);
 	
-	/**
-	 * Remove a scheduled trigger from the timeline
-	 */
-	static void removeScheduledTrigger(ScheduledTrigger* node)
-	{
-		if (node == null || head == null)
-			return;
-		
-		// Check if this is the only node remaining
-		if (node.next == node)
-		{
-			// Only node in list - clear the pool
-			head = null;
-		}
-		else
-		{
-			// Normal removal: unlink the node from the cycle
-			node.prev.next = node.next;
-			node.next.prev = node.prev;
-			
-			// Update head if we removed it
-			if (head == node)
-			{
-				head = node.next;
-			}
-		}
-		
-		destroy(node);
-	}
+	/// Execute pending triggers (semantics depend on implementation)
+	void exec();
 	
-	/**
-	 * Insert a node into sorted position (ascending by executeTimeUs)
-	 * Walks backwards from tail for O(1) insertion in typical use case
-	 */
-	private static void insertNodeSorted(ScheduledTrigger* node)
+	/// Clear all pending triggers and reset state
+	void clear();
+}
+
+/**
+ * SchedulerBase - Shared implementation for all scheduler variants
+ * 
+ * Provides:
+ * - Trigger queue management (circular doubly-linked list)
+ * - Jitter metrics collection (debug builds only)
+ * - Insertion/removal operations
+ * 
+ * Subclasses override exec() to define execution strategy.
+ */
+abstract class SchedulerBase : IScheduler
+{
+	protected ScheduledTrigger* head;
+	protected long offsetUs = 0;  // Persistent jitter compensation
+	
+	/// Insert a node into sorted position (ascending by executeTimeUs)
+	protected void insertNodeSorted(ScheduledTrigger* node)
 	{
 		if (head == null)
 		{
@@ -369,107 +291,143 @@ static class TriggerScheduler
 		}
 	}
 	
-	/**
-	 * Handle next ready trigger if available
-	 * Since list is sorted, head is always the next trigger to execute
-	 */
-	static void handleTrigger()
+	/// Remove a scheduled trigger from the timeline
+	void removeScheduledTrigger(ScheduledTrigger* node)
 	{
-		if (head == null)
+		if (node == null || head == null)
 			return;
 		
-		long currentTimeUs = TimeUtils.currTimeUs();
-		
-		if (head.executeTimeUs <= currentTimeUs)
+		// Check if this is the only node remaining
+		if (node.next == node)
 		{
-			// Head is ready, execute and remove
-			head.trigger.notify();
-			removeScheduledTrigger(head);
+			// Only node in list - clear the pool
+			head = null;
 		}
+		else
+		{
+			// Normal removal: unlink the node from the cycle
+			node.prev.next = node.next;
+			node.next.prev = node.prev;
+			
+			// Update head if we removed it
+			if (head == node)
+			{
+				head = node.next;
+			}
+		}
+		
+		destroy(node);
 	}
 	
-	/**
-	 * Clear all pending triggers and reset jitter compensation state
-	 * Used primarily for testing isolation between test runs
-	 */
-	static void clear()
+	/// Clear all pending triggers and reset jitter compensation state
+	void clear()
 	{
 		while (head != null)
 		{
-			ScheduledTrigger* next = head.next;
 			removeScheduledTrigger(head);
 		}
-		head = null;
 		offsetUs = 0;  // Reset jitter compensation for next test
 	}
 	
+	/// Execute pending triggers (polymorphic - subclasses define behavior)
+	abstract void exec();
+}
+
+/**
+ * SchedulerHighP - High-precision fiber-based scheduler with busy-spin
+ * 
+ * SEMANTICS:
+ * - scheduleTrigger() spawns a fiber on first trigger
+ * - Fiber busy-spins for microsecond-level timing precision
+ * - exec() either spawns the fiber or returns immediately (depending on queue state)
+ * 
+ * PERFORMANCE:
+ * - Precision: Microsecond-level
+ * - CPU cost: 100% during scheduled waits
+ * - Jitter compensation: Aggressive (3/4 factor)
+ */
+class SchedulerHighP : SchedulerBase
+{
 	/**
-	 * Internal: Busy-spin yield for microsecond precision
-	 * Spins until target time is reached.
+	 * Schedule a trigger for execution at an absolute time
+	 * 
+	 * Fire-and-forget API: caller enqueues, scheduler manages execution.
+	 * If queue was empty, spawns a fiber to run the scheduler loop.
+	 * Fiber executes all pending triggers, then exits.
 	 */
-	private static void yieldUntil(long delayUs)
+	override ScheduledTrigger* scheduleTrigger(ITrigger trigger, long executeTimeUs)
 	{
-		if (delayUs > 0)
+		bool wasEmpty = (head == null);
+		
+		ScheduledTrigger* scheduled = new ScheduledTrigger();
+		scheduled.trigger = trigger;
+		scheduled.executeTimeUs = executeTimeUs;
+		scheduled.prev = null;
+		scheduled.next = null;
+		
+		insertNodeSorted(scheduled);
+		
+		// Spawn fiber if pool was empty (became non-empty after insertion)
+		if (wasEmpty)
 		{
-			long targetUs = TimeUtils.currTimeUs() + delayUs;
-			while (TimeUtils.currTimeUs() < targetUs) { }
+			Fiber schedulerFiber = new Fiber(() {
+				this.execInternal();
+			});
+			schedulerFiber.call();  // Start immediately
 		}
+		
+		return scheduled;
 	}
 	
 	/**
-	 * SCHEDULER'S EXECUTION FIBER - Internal responsibility
-	 * 
-	 * Called by spawned fiber to execute all pending triggers on time.
-	 * Scheduler owns complete control over fiber lifecycle and yielding behavior.
-	 * This is where timing precision and jitter compensation happen.
-	 * 
-	 * ALGORITHM:
-	 * 1. Loop while queue is non-empty:
-	 *    2. Calculate delay: nextTriggerTime - now
-	 *    3. Apply jitter compensation: yield(delay - offset)
-	 *    4. Execute next trigger, measure actual execution time
-	 *    5. Update offset: first trigger sets directly, rest converge via delta/FACTOR
-	 *    6. Remove trigger from queue and repeat
-	 * 
-	 * JITTER COMPENSATION:
-	 * Predictive offset accumulation based on actual vs scheduled execution time.
-	 * All triggers use exponential convergence: offset += delta / ANTI_JITTER_FACTOR
-	 * offsetUs starts at 0, so first trigger's overhead is dampened by the factor.
-	 * Converges to near-zero microsecond precision within ~10-30 triggers.
-	 * 
-	 * YIELD STRATEGY:
-	 * Uses busy-spin yield to achieve microsecond precision.
-	 * This is the scheduler's internal concern, not exposed to callers.
+	 * Delay a trigger for a specified duration from now
 	 */
-	private static void executeScheduled()
+	override ScheduledTrigger* delayTrigger(ITrigger trigger, long delayUs)
 	{
-		// offsetUs is static (persistent across fiber spawns)
-		
+		long executeTimeUs = TimeUtils.currTimeUs() + delayUs;
+		return scheduleTrigger(trigger, executeTimeUs);
+	}
+	
+	/// Polymorphic exec - HighP spawns fiber on empty queue
+	override void exec()
+	{
+		if (head != null)
+		{
+			Fiber schedulerFiber = new Fiber(() {
+				this.execInternal();
+			});
+			schedulerFiber.call();
+		}
+	}
+	
+	/// Internal execution loop (runs in fiber context)
+	private void execInternal()
+	{
 		debug(EventJitter)
 		{
-			import core.thread : Fiber;
 			long fiberStart = TimeUtils.currTimeUs();
 			writeln("  [Fiber started at ", fiberStart, "µs, offsetUs=", offsetUs, "µs]");
 		}
 		
 		while (head != null)
 		{
+			long executeTimeUs = TimeUtils.currTimeUs();
 			long scheduledTimeUs = head.executeTimeUs;
-			long beforeWaitUs = TimeUtils.currTimeUs();
-			long delayUs = scheduledTimeUs - beforeWaitUs;
+			long delayUs = scheduledTimeUs - executeTimeUs;
 			
 			if (delayUs > 0)
 			{
 				// Apply accumulated offset as compensation
 				long compensatedDelayUs = delayUs - offsetUs;
-				yieldUntil(compensatedDelayUs);
+				yieldUntilHighP(compensatedDelayUs);
 			}
 			
-			// Record actual execution time for jitter measurement
-			long actualExecutionTimeUs = TimeUtils.currTimeUs();
-			long deltaUs = actualExecutionTimeUs - scheduledTimeUs;
+			// Measure compensation error at the timing check moment
+			// Delta represents how far off the yield was from target
+			long deltaUs = scheduledTimeUs - executeTimeUs;
 			
 			// Update offset with 3/4 step convergence (aggressive dampening)
+			// This compensates for OS jitter in the yield mechanism
 			long oldOffsetUs = offsetUs;
 			long offsetDelta = (deltaUs * 3) / 4;
 			offsetUs = oldOffsetUs + offsetDelta;
@@ -478,7 +436,6 @@ static class TriggerScheduler
 			debug(EventJitter)
 			{
 				jitterMetrics.deltas ~= deltaUs;
-				// Record the actual offsetUs value (not a computation)
 				jitterMetrics.offsets ~= offsetUs;
 				jitterMetrics.minDelta = min(jitterMetrics.minDelta, deltaUs);
 				jitterMetrics.maxDelta = max(jitterMetrics.maxDelta, deltaUs);
@@ -489,5 +446,227 @@ static class TriggerScheduler
 			// Execute one trigger
 			handleTrigger();
 		}
+	}
+	
+	/// Busy-spin yield for microsecond precision
+	private void yieldUntilHighP(long delayUs)
+	{
+		if (delayUs > 0)
+		{
+			long targetUs = TimeUtils.currTimeUs() + delayUs;
+			while (TimeUtils.currTimeUs() < targetUs) { }
+		}
+	}
+	
+	/// Execute next trigger and remove it from the schedule
+	private void handleTrigger()
+	{
+		if (head == null)
+			return;
+		
+		head.trigger.notify();
+		removeScheduledTrigger(head);
+	}
+}
+
+/**
+ * SchedulerLowP - Low-precision fiber-based scheduler with pure OS sleep
+ * 
+ * SEMANTICS:
+ * - scheduleTrigger() spawns a fiber on first trigger
+ * - Fiber uses OS sleep exclusively (no busy-spin) for energy efficiency
+ * - exec() either spawns the fiber or returns immediately
+ * 
+ * PERFORMANCE:
+ * - Precision: Millisecond-level (~1ms granularity, trades precision for CPU efficiency)
+ * - CPU cost: Negligible during waits (sleeps entirely, no busy-spin)
+ * - Jitter compensation: Limited effectiveness (OS jitter dominates)
+ */
+class SchedulerLowP : SchedulerBase
+{
+	override ScheduledTrigger* scheduleTrigger(ITrigger trigger, long executeTimeUs)
+	{
+		bool wasEmpty = (head == null);
+		
+		ScheduledTrigger* scheduled = new ScheduledTrigger();
+		scheduled.trigger = trigger;
+		scheduled.executeTimeUs = executeTimeUs;
+		scheduled.prev = null;
+		scheduled.next = null;
+		
+		insertNodeSorted(scheduled);
+		
+		if (wasEmpty)
+		{
+			Fiber schedulerFiber = new Fiber(() {
+				this.execInternal();
+			});
+			schedulerFiber.call();
+		}
+		
+		return scheduled;
+	}
+	
+	override ScheduledTrigger* delayTrigger(ITrigger trigger, long delayUs)
+	{
+		long executeTimeUs = TimeUtils.currTimeUs() + delayUs;
+		return scheduleTrigger(trigger, executeTimeUs);
+	}
+	
+	override void exec()
+	{
+		if (head != null)
+		{
+			Fiber schedulerFiber = new Fiber(() {
+				this.execInternal();
+			});
+			schedulerFiber.call();
+		}
+	}
+	
+	private void execInternal()
+	{
+		debug(EventJitter)
+		{
+			long fiberStart = TimeUtils.currTimeUs();
+			writeln("  [LowP Fiber started at ", fiberStart, "µs, offsetUs=", offsetUs, "µs]");
+		}
+		
+		while (head != null)
+		{
+			long executeTimeUs = TimeUtils.currTimeUs();
+			long scheduledTimeUs = head.executeTimeUs;
+			long delayUs = scheduledTimeUs - executeTimeUs;
+			
+			// Sleep for the full delay (OS sleep precision, no busy-spin)
+			// LowP accepts millisecond-level precision for negligible CPU cost
+			if (delayUs > 0)
+			{
+				long sleepMs = (delayUs + 999) / 1000;  // Round up to nearest millisecond
+				Thread.sleep(dur!"msecs"(sleepMs));
+			}
+			
+			// Measure compensation error at the timing check moment
+			long deltaUs = scheduledTimeUs - executeTimeUs;
+			
+			// Update offset with 3/4 step convergence
+			// LowP jitter is dominated by OS sleep granularity, so compensation is limited
+			long oldOffsetUs = offsetUs;
+			long offsetDelta = (deltaUs * 3) / 4;
+			offsetUs = oldOffsetUs + offsetDelta;
+			
+			debug(EventJitter)
+			{
+				jitterMetrics.deltas ~= deltaUs;
+				jitterMetrics.offsets ~= offsetUs;
+				jitterMetrics.minDelta = min(jitterMetrics.minDelta, deltaUs);
+				jitterMetrics.maxDelta = max(jitterMetrics.maxDelta, deltaUs);
+				jitterMetrics.sumDelta += deltaUs;
+				jitterMetrics.triggersProcessed++;
+			}
+			
+			handleTrigger();
+		}
+	}
+	
+	private void handleTrigger()
+	{
+		if (head == null)
+			return;
+		
+		head.trigger.notify();
+		removeScheduledTrigger(head);
+	}
+}
+
+/**
+ * SchedulerPolled - Synchronous polling scheduler
+ * 
+ * SEMANTICS:
+ * - scheduleTrigger() simply enqueues (no fiber spawning)
+ * - exec() processes all ready triggers synchronously in caller's context
+ * - Caller must invoke exec() regularly (each game loop frame)
+ * 
+ * PERFORMANCE:
+ * - Precision: Frame-rate limited (16ms @ 60fps)
+ * - CPU cost: Negligible (amortized into frame loop)
+ * - Synchronous: No async overhead
+ */
+class SchedulerPolled : SchedulerBase
+{
+	override ScheduledTrigger* scheduleTrigger(ITrigger trigger, long executeTimeUs)
+	{
+		ScheduledTrigger* scheduled = new ScheduledTrigger();
+		scheduled.trigger = trigger;
+		scheduled.executeTimeUs = executeTimeUs;
+		scheduled.prev = null;
+		scheduled.next = null;
+		
+		insertNodeSorted(scheduled);
+		return scheduled;
+	}
+	
+	override ScheduledTrigger* delayTrigger(ITrigger trigger, long delayUs)
+	{
+		long executeTimeUs = TimeUtils.currTimeUs() + delayUs;
+		return scheduleTrigger(trigger, executeTimeUs);
+	}
+	
+	/// Synchronously process all ready triggers
+	override void exec()
+	{
+		long currentTimeUs = TimeUtils.currTimeUs();
+		
+		while (head != null && head.executeTimeUs <= currentTimeUs)
+		{
+			head.trigger.notify();
+			removeScheduledTrigger(head);
+		}
+	}
+}
+
+/**
+ * TriggerScheduler - Backwards compatibility wrapper
+ * 
+ * Legacy code can still use TriggerScheduler.scheduleTrigger() etc. via a global instance.
+ * New code should instantiate SchedulerHighP, SchedulerLowP, or SchedulerPolled directly.
+ */
+static class TriggerScheduler
+{
+	private static IScheduler _globalScheduler;
+	
+	/// Initialize with a specific scheduler variant (default: HighP)
+	static void init(IScheduler scheduler = null)
+	{
+		_globalScheduler = scheduler is null ? new SchedulerHighP() : scheduler;
+	}
+	
+	/// Get the current global scheduler
+	static IScheduler get()
+	{
+		if (_globalScheduler is null)
+			init();
+		return _globalScheduler;
+	}
+	
+	/// Delegate to global scheduler
+	static ScheduledTrigger* scheduleTrigger(ITrigger trigger, long executeTimeUs)
+	{
+		return get().scheduleTrigger(trigger, executeTimeUs);
+	}
+	
+	static ScheduledTrigger* delayTrigger(ITrigger trigger, long delayUs)
+	{
+		return get().delayTrigger(trigger, delayUs);
+	}
+	
+	static void removeScheduledTrigger(ScheduledTrigger* node)
+	{
+		get().removeScheduledTrigger(node);
+	}
+	
+	static void clear()
+	{
+		get().clear();
 	}
 }
