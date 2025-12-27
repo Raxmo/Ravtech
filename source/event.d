@@ -129,7 +129,7 @@ class Event(T)
  * Trigger - Typed trigger implementing ITrigger
  * 
  * Carries an event and payload, implements type-erased notify() interface.
- * Can be executed immediately or scheduled with TriggerScheduler.
+ * Can be executed immediately or scheduled with an IScheduler instance.
  * T: Payload type passed to listeners
  */
 class Trigger(T) : ITrigger
@@ -170,11 +170,6 @@ struct ScheduledTrigger
 	long executeTimeUs;
 	ScheduledTrigger* prev;
 	ScheduledTrigger* next;
-	
-	void cancel()
-	{
-		TriggerScheduler.removeScheduledTrigger(&this);
-	}
 }
 
 debug(EventJitter)
@@ -579,51 +574,5 @@ class SchedulerPolled : SchedulerBase
 			head.trigger.notify();
 			removeScheduledTrigger(head);
 		}
-	}
-}
-
-/**
- * TriggerScheduler - Backwards compatibility wrapper
- * 
- * Legacy code can still use TriggerScheduler.scheduleTrigger() etc. via a global instance.
- * New code should instantiate SchedulerHighRes, SchedulerLowRes, or SchedulerPolled directly.
- */
-static class TriggerScheduler
-{
-	private static IScheduler _globalScheduler;
-	
-	/// Initialize with a specific scheduler variant (default: HighRes)
-	static void init(IScheduler scheduler = null)
-	{
-		_globalScheduler = scheduler is null ? new SchedulerHighRes() : scheduler;
-	}
-	
-	/// Get the current global scheduler
-	static IScheduler get()
-	{
-		if (_globalScheduler is null)
-			init();
-		return _globalScheduler;
-	}
-	
-	/// Delegate to global scheduler
-	static ScheduledTrigger* scheduleTrigger(ITrigger trigger, long executeTimeUs)
-	{
-		return get().scheduleTrigger(trigger, executeTimeUs);
-	}
-	
-	static ScheduledTrigger* delayTrigger(ITrigger trigger, long delayUs)
-	{
-		return get().delayTrigger(trigger, delayUs);
-	}
-	
-	static void removeScheduledTrigger(ScheduledTrigger* node)
-	{
-		get().removeScheduledTrigger(node);
-	}
-	
-	static void clear()
-	{
-		get().clear();
 	}
 }
