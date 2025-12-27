@@ -316,6 +316,13 @@ abstract class SchedulerBase : IScheduler
 		destroy(node);
 	}
 	
+	/// Schedule trigger with relative delay from now
+	ScheduledTrigger* delayTrigger(ITrigger trigger, long delayUs)
+	{
+		long executeTimeUs = TimeUtils.currTimeUs() + delayUs;
+		return scheduleTrigger(trigger, executeTimeUs);
+	}
+	
 	/// Clear all pending triggers and reset jitter compensation state
 	void clear()
 	{
@@ -373,15 +380,6 @@ class SchedulerHighRes : SchedulerBase
 		}
 		
 		return scheduled;
-	}
-	
-	/**
-	 * Delay a trigger for a specified duration from now
-	 */
-	override ScheduledTrigger* delayTrigger(ITrigger trigger, long delayUs)
-	{
-		long executeTimeUs = TimeUtils.currTimeUs() + delayUs;
-		return scheduleTrigger(trigger, executeTimeUs);
 	}
 	
 	/// Polymorphic exec - HighRes spawns fiber on empty queue
@@ -485,12 +483,6 @@ class SchedulerLowRes : SchedulerBase
 		return scheduled;
 	}
 	
-	override ScheduledTrigger* delayTrigger(ITrigger trigger, long delayUs)
-	{
-		long executeTimeUs = TimeUtils.currTimeUs() + delayUs;
-		return scheduleTrigger(trigger, executeTimeUs);
-	}
-	
 	override void exec()
 	{
 		if (head != null)
@@ -575,12 +567,6 @@ class SchedulerPolled : SchedulerBase
 		
 		insertNodeSorted(scheduled);
 		return scheduled;
-	}
-	
-	override ScheduledTrigger* delayTrigger(ITrigger trigger, long delayUs)
-	{
-		long executeTimeUs = TimeUtils.currTimeUs() + delayUs;
-		return scheduleTrigger(trigger, executeTimeUs);
 	}
 	
 	/// Synchronously process all ready triggers
