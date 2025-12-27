@@ -211,9 +211,9 @@ debug(EventJitter)
  * IScheduler - Polymorphic interface for trigger scheduling
  * 
  * Different implementations provide different execution semantics:
- * - SchedulerHighP: Fiber + busy-spin (microsecond precision, high CPU)
- * - SchedulerLowP: Fiber + system sleep (millisecond precision, low CPU)
- * - SchedulerPolled: Synchronous polling (frame-rate precision, zero async overhead)
+ * - SchedulerHighRes: Fiber + busy-spin (microsecond resolution, high CPU)
+ * - SchedulerLowRes: Fiber + system sleep (millisecond resolution, low CPU)
+ * - SchedulerPolled: Synchronous polling (frame-rate resolution, zero async overhead)
  */
 interface IScheduler
 {
@@ -330,19 +330,19 @@ abstract class SchedulerBase : IScheduler
 }
 
 /**
- * SchedulerHighP - High-precision fiber-based scheduler with busy-spin
+ * SchedulerHighRes - High-resolution fiber-based scheduler with busy-spin
  * 
  * SEMANTICS:
  * - scheduleTrigger() spawns a fiber on first trigger
- * - Fiber busy-spins for microsecond-level timing precision
+ * - Fiber busy-spins for microsecond-level timing resolution
  * - exec() either spawns the fiber or returns immediately (depending on queue state)
  * 
  * PERFORMANCE:
- * - Precision: Microsecond-level
+ * - Resolution: Microsecond-level
  * - CPU cost: 100% during scheduled waits
- * - Jitter compensation: Aggressive (3/4 factor)
+ * - No jitter compensation: external noise is minimal and unpredictable
  */
-class SchedulerHighP : SchedulerBase
+class SchedulerHighRes : SchedulerBase
 {
 	/**
 	 * Schedule a trigger for execution at an absolute time
@@ -448,7 +448,7 @@ class SchedulerHighP : SchedulerBase
 }
 
 /**
- * SchedulerLowP - Low-precision fiber-based scheduler with pure OS sleep
+ * SchedulerLowRes - Low-resolution fiber-based scheduler with pure OS sleep
  * 
  * SEMANTICS:
  * - scheduleTrigger() spawns a fiber on first trigger
@@ -456,11 +456,11 @@ class SchedulerHighP : SchedulerBase
  * - exec() either spawns the fiber or returns immediately
  * 
  * PERFORMANCE:
- * - Precision: Millisecond-level (~1ms granularity, trades precision for CPU efficiency)
+ * - Resolution: Millisecond-level (~1ms granularity, trades resolution for CPU efficiency)
  * - CPU cost: Negligible during waits (sleeps entirely, no busy-spin)
- * - Jitter compensation: Limited effectiveness (OS jitter dominates)
+ * - Deltas: ±450µs around zero, occasional 1-3ms spikes from OS scheduler
  */
-class SchedulerLowP : SchedulerBase
+class SchedulerLowRes : SchedulerBase
 {
 	override ScheduledTrigger* scheduleTrigger(ITrigger trigger, long executeTimeUs)
 	{
@@ -600,16 +600,16 @@ class SchedulerPolled : SchedulerBase
  * TriggerScheduler - Backwards compatibility wrapper
  * 
  * Legacy code can still use TriggerScheduler.scheduleTrigger() etc. via a global instance.
- * New code should instantiate SchedulerHighP, SchedulerLowP, or SchedulerPolled directly.
+ * New code should instantiate SchedulerHighRes, SchedulerLowRes, or SchedulerPolled directly.
  */
 static class TriggerScheduler
 {
 	private static IScheduler _globalScheduler;
 	
-	/// Initialize with a specific scheduler variant (default: HighP)
+	/// Initialize with a specific scheduler variant (default: HighRes)
 	static void init(IScheduler scheduler = null)
 	{
-		_globalScheduler = scheduler is null ? new SchedulerHighP() : scheduler;
+		_globalScheduler = scheduler is null ? new SchedulerHighRes() : scheduler;
 	}
 	
 	/// Get the current global scheduler
