@@ -224,19 +224,23 @@ interface IScheduler
 }
 
 /**
- * SchedulerLowRes - Event scheduler with two execution modes
+ * SchedulerLowRes - Event scheduler with sleeping sleep-and-execute semantics
  * 
- * MODE 1: Async fire-and-forget (via scheduleTrigger)
- * - scheduleTrigger() spawns fiber on first trigger
- * - Fiber sleeps until scheduled time, then executes
- * - Automatic, caller just schedules and forgets
- * - Resolution: Millisecond-level (~1ms, trades precision for CPU efficiency)
+ * DESIGN: Synchronous execution with OS sleep (no fibers, no async)
+ * - scheduleTrigger() enqueues trigger and executes all ready ones immediately
+ * - Sleeps (blocks thread) until each trigger's scheduled time arrives
+ * - poll() executes ready triggers without sleeping (frame-aligned mode)
  * 
- * MODE 2: Synchronous polling (via poll)
- * - poll() executes all ready triggers synchronously
- * - Caller invokes in game loop each frame
- * - Frame-rate limited (16ms @ 60fps)
- * - Zero async overhead, no fibers
+ * EXECUTION MODES:
+ * 1. Blocking sleep (scheduleTrigger):
+ *    - Thread.sleep() until scheduled time
+ *    - Blocking but CPU-efficient (OS scheduler handles sleep)
+ *    - Resolution: Millisecond-level (~1ms from rounding)
+ * 
+ * 2. Frame polling (poll):
+ *    - Executes only ready triggers (no sleep)
+ *    - Caller invokes once per frame
+ *    - Zero sleep overhead, frame-rate limited
  * 
  * QUEUE: Circular doubly-linked list sorted by executeTimeUs (O(1) ops)
  * JITTER: Debug mode collects delta measurements (zero production overhead)
@@ -286,11 +290,9 @@ class SchedulerLowRes : IScheduler
 		}
 	}
 	
-	/// Schedule trigger for async execution (spawns fiber, fire-and-forget)
+	/// Schedule trigger for execution (enqueue and execute ready triggers)
 	ScheduledTrigger* scheduleTrigger(ITrigger trigger, long executeTimeUs)
 	{
-		bool wasEmpty = (head == null);
-		
 		ScheduledTrigger* scheduled = new ScheduledTrigger();
 		scheduled.trigger = trigger;
 		scheduled.executeTimeUs = executeTimeUs;
@@ -299,11 +301,8 @@ class SchedulerLowRes : IScheduler
 		
 		insertNodeSorted(scheduled);
 		
-		// Spawn fiber if this was the first trigger
-		if (wasEmpty)
-		{
-			execAsync();
-		}
+		// Execute all ready triggers immediately
+		executeReady();
 		
 		return scheduled;
 	}
@@ -352,47 +351,35 @@ class SchedulerLowRes : IScheduler
 		}
 	}
 	
-	/// Async fiber-based execution (spawns fiber, sleeps until time, executes)
-	/// Called automatically by scheduleTrigger() on first trigger
-	private void execAsync()
+	/// Execute all ready triggers (sleep if future-scheduled)
+	private void executeReady()
 	{
-		if (head != null)
+		while (head != null)
 		{
-			new Fiber(() {
-				debug(EventJitter)
-				{
-					long fiberStart = TimeUtils.currTimeUs();
-					writeln("  [LowRes Fiber started at ", fiberStart, "µs]");
-				}
-				
-				while (head != null)
-				{
-					long delayUs = head.executeTimeUs - TimeUtils.currTimeUs();
-					
-					// Sleep for the full delay (OS sleep resolution, no busy-spin)
-					// LowRes accepts millisecond-level resolution for negligible CPU cost
-					long sleepMs = (delayUs + 500) / 1000;  // Round to nearest millisecond
-					if (sleepMs > 0)
-					{
-						Thread.sleep(dur!"msecs"(sleepMs));
-					}
-					
-					debug(EventJitter)
-					{
-						// Measure actual execution jitter (external system noise)
-						long deltaUs = TimeUtils.currTimeUs() - head.executeTimeUs;
-						jitterMetrics.deltas ~= deltaUs;
-						jitterMetrics.minDelta = min(jitterMetrics.minDelta, deltaUs);
-						jitterMetrics.maxDelta = max(jitterMetrics.maxDelta, deltaUs);
-						jitterMetrics.sumDelta += deltaUs;
-						jitterMetrics.triggersProcessed++;
-					}
-					
-					// Execute trigger and remove from queue
-					head.trigger.notify();
-					removeScheduledTrigger(head);
-				}
-			}).call();
+			long delayUs = head.executeTimeUs - TimeUtils.currTimeUs();
+			
+			// Sleep for the full delay (OS sleep resolution, no busy-spin)
+			// LowRes accepts millisecond-level resolution for negligible CPU cost
+			long sleepMs = (delayUs + 500) / 1000;  // Round to nearest millisecond
+			if (sleepMs > 0)
+			{
+				Thread.sleep(dur!"msecs"(sleepMs));
+			}
+			
+			debug(EventJitter)
+			{
+				// Measure actual execution jitter (external system noise)
+				long deltaUs = TimeUtils.currTimeUs() - head.executeTimeUs;
+				jitterMetrics.deltas ~= deltaUs;
+				jitterMetrics.minDelta = min(jitterMetrics.minDelta, deltaUs);
+				jitterMetrics.maxDelta = max(jitterMetrics.maxDelta, deltaUs);
+				jitterMetrics.sumDelta += deltaUs;
+				jitterMetrics.triggersProcessed++;
+			}
+			
+			// Execute trigger and remove from queue
+			head.trigger.notify();
+			removeScheduledTrigger(head);
 		}
 	}
 	
