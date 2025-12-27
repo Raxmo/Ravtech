@@ -19,27 +19,16 @@ interface ITrigger
 
 
 /**
- * ListenerHandle - Opaque handle to a registered listener
+ * Listener - Wrapper for a delegate and its index
  * 
- * Holds the index into the event's listener array.
- * Returned by addListener() and passed to removeListener().
+ * Holds the actual listener delegate and its current position in the event's array.
+ * Allocated anywhere (stack, heap, doesn't matter).
+ * Event holds pointers to these wrappers.
  */
-class ListenerHandle
+struct Listener(T)
 {
-	protected size_t index;
-	protected bool valid;
-	
-	this(size_t idx)
-	{
-		index = idx;
-		valid = true;
-	}
-	
-	@property size_t getIndex() const { return index; }
-	@property bool isValid() const { return valid; }
-	
-	void setIndex(size_t idx) { index = idx; }
-	void invalidate() { valid = false; }
+	void delegate(Event!T) listener;  // The actual listener delegate
+	size_t index;                      // Current position in event's listener array
 }
 
 /**
@@ -55,11 +44,10 @@ class ListenerHandle
  */
 class Event(T)
 {
-	alias ListenerDelegate = void delegate(Event!T);
+	alias ListenerPtr = Listener!T*;
 	
-	protected ListenerDelegate[] listeners;
-	protected ListenerHandle[] handles;  // Parallel array of handles
-	protected T payload;
+	protected ListenerPtr[] listeners;  // Array of pointers to listener wrappers
+	protected T _payload;
 	
 	this()
 	{
@@ -67,27 +55,28 @@ class Event(T)
 	
 	/**
 	 * Add a listener callback
-	 * Returns a handle for O(1) removal
+	 * Returns a pointer to the listener wrapper for O(1) removal
 	 * O(1) amortized
 	 */
-	ListenerHandle addListener(ListenerDelegate listener)
+	ListenerPtr addListener(void delegate(Event!T) listener)
 	{
-		auto handle = new ListenerHandle(listeners.length);
-		listeners ~= listener;
-		handles ~= handle;
-		return handle;
+		auto listenerObj = new Listener!T();
+		listenerObj.listener = listener;
+		listenerObj.index = listeners.length;
+		listeners ~= listenerObj;
+		return listenerObj;
 	}
 	
 	/**
-	 * Remove a listener callback via handle
-	 * O(1) swap-and-pop: swap with last, update displaced handle's index, pop
+	 * Remove a listener callback via pointer
+	 * O(1) swap-and-pop: swap with last, update displaced listener's index, pop
 	 */
-	void removeListener(ListenerHandle handle)
+	void removeListener(ListenerPtr listenerPtr)
 	{
-		if (!handle.isValid())
+		if (listenerPtr is null)
 			return;
 		
-		size_t idx = handle.getIndex();
+		size_t idx = listenerPtr.index;
 		if (idx >= listeners.length)
 			return;
 		
@@ -95,19 +84,13 @@ class Event(T)
 		if (idx < listeners.length - 1)
 		{
 			// Move last to current position
-			listeners[idx] = listeners[$ - 1];
-			handles[idx] = handles[$ - 1];
-			
-			// Update the handle we just moved with its new index
-			handles[idx].setIndex(idx);
+			auto lastListener = listeners[$ - 1];
+			listeners[idx] = lastListener;
+			lastListener.index = idx;
 		}
 		
 		// Pop the last element
 		listeners.length--;
-		handles.length--;
-		
-		// Invalidate the removed handle
-		handle.invalidate();
 	}
 	
 	/**
@@ -115,9 +98,9 @@ class Event(T)
 	 */
 	void fire()
 	{
-		foreach (listener; listeners)
+		foreach (listenerPtr; listeners)
 		{
-			listener(this);
+			listenerPtr.listener(this);
 		}
 	}
 	
@@ -127,16 +110,16 @@ class Event(T)
 	 */
 	void notifyWithPayload(T payload)
 	{
-		this.payload = payload;
+		this._payload = payload;
 		fire();
 	}
 	
 	/**
 	 * Get payload (called by listeners)
 	 */
-	T getPayload() const
+	@property T payload() const
 	{
-		return payload;
+		return _payload;
 	}
 }
 
@@ -198,6 +181,7 @@ debug(EventJitter)
 	struct JitterMetrics
 	{
 		long[] deltas;           // Individual delta measurements (µs)
+		long[] offsets;          // Accumulated offset values (µs)
 		long minDelta = long.max;
 		long maxDelta = long.min;
 		long sumDelta = 0;
@@ -213,6 +197,7 @@ debug(EventJitter)
 		void reset()
 		{
 			deltas = [];
+			offsets = [];
 			minDelta = long.max;
 			maxDelta = long.min;
 			sumDelta = 0;
@@ -260,7 +245,9 @@ debug(EventJitter)
 static class TriggerScheduler
 {
 	private static ScheduledTrigger* head;
-	static immutable long ANTI_JITTER_FACTOR = 4;  // Divisor for jitter compensation convergence
+	private static long offsetUs = 0;  // Persistent jitter compensation across fiber spawns
+	// Jitter compensation: offsetUs += (deltaUs * 4) / 3
+	// 4/3 step size ≈ 1.333, reciprocal of 3/4
 	
 	/**
 	 * Schedule a trigger for execution at an absolute time
@@ -299,12 +286,11 @@ static class TriggerScheduler
 	}
 	
 	/**
-	 * Schedule a trigger with a delay from now
+	 * Delay a trigger for a specified duration from now
 	 */
-	static ScheduledTrigger* scheduleTrigger(ITrigger trigger, long delayUs, bool isDelay)
+	static ScheduledTrigger* delayTrigger(ITrigger trigger, long delayUs)
 	{
 		long executeTimeUs = TimeUtils.currTimeUs() + delayUs;
-		// Note: The overload above handles fiber resumption
 		return scheduleTrigger(trigger, executeTimeUs);
 	}
 	
@@ -316,19 +302,23 @@ static class TriggerScheduler
 		if (node == null || head == null)
 			return;
 		
+		// Check if this is the only node remaining
 		if (node.next == node)
 		{
-			// Only node in list
+			// Only node in list - clear the pool
 			head = null;
 		}
 		else
 		{
-			// Unlink the node
+			// Normal removal: unlink the node from the cycle
 			node.prev.next = node.next;
 			node.next.prev = node.prev;
 			
+			// Update head if we removed it
 			if (head == node)
+			{
 				head = node.next;
+			}
 		}
 		
 		destroy(node);
@@ -379,10 +369,10 @@ static class TriggerScheduler
 	}
 	
 	/**
-	 * Process next ready trigger if available
+	 * Handle next ready trigger if available
 	 * Since list is sorted, head is always the next trigger to execute
 	 */
-	static void processReady()
+	static void handleTrigger()
 	{
 		if (head == null)
 			return;
@@ -398,36 +388,8 @@ static class TriggerScheduler
 	}
 	
 	/**
-	 * Process all pending triggers until list is empty
-	 */
-	static void processAll()
-	{
-		while (head != null)
-		{
-			processReady();
-		}
-	}
-	
-	/**
-	 * Check if there are pending triggers
-	 */
-	static bool hasPendingTriggers()
-	{
-		return head != null;
-	}
-	
-	/**
-	 * Get next trigger's execution time (head of sorted list)
-	 */
-	static long nextTriggerTimeUs()
-	{
-		if (head == null)
-			return long.max;
-		return head.executeTimeUs;
-	}
-	
-	/**
-	 * Clear all pending triggers
+	 * Clear all pending triggers and reset jitter compensation state
+	 * Used primarily for testing isolation between test runs
 	 */
 	static void clear()
 	{
@@ -437,6 +399,7 @@ static class TriggerScheduler
 			removeScheduledTrigger(head);
 		}
 		head = null;
+		offsetUs = 0;  // Reset jitter compensation for next test
 	}
 	
 	/**
@@ -469,8 +432,8 @@ static class TriggerScheduler
 	 * 
 	 * JITTER COMPENSATION:
 	 * Predictive offset accumulation based on actual vs scheduled execution time.
-	 * First trigger directly sets offset to measured delta.
-	 * Subsequent triggers converge exponentially: offset += delta / ANTI_JITTER_FACTOR
+	 * All triggers use exponential convergence: offset += delta / ANTI_JITTER_FACTOR
+	 * offsetUs starts at 0, so first trigger's overhead is dampened by the factor.
 	 * Converges to near-zero microsecond precision within ~10-30 triggers.
 	 * 
 	 * YIELD STRATEGY:
@@ -479,14 +442,20 @@ static class TriggerScheduler
 	 */
 	private static void executeScheduled()
 	{
-		long offsetUs = 0;  // Accumulated jitter compensation
-		bool isFirstTrigger = true;
+		// offsetUs is static (persistent across fiber spawns)
+		
+		debug(EventJitter)
+		{
+			import core.thread : Fiber;
+			long fiberStart = TimeUtils.currTimeUs();
+			writeln("  [Fiber started at ", fiberStart, "µs, offsetUs=", offsetUs, "µs]");
+		}
 		
 		while (head != null)
 		{
 			long scheduledTimeUs = head.executeTimeUs;
-			long nowUs = TimeUtils.currTimeUs();
-			long delayUs = scheduledTimeUs - nowUs;
+			long beforeWaitUs = TimeUtils.currTimeUs();
+			long delayUs = scheduledTimeUs - beforeWaitUs;
 			
 			if (delayUs > 0)
 			{
@@ -499,21 +468,17 @@ static class TriggerScheduler
 			long actualExecutionTimeUs = TimeUtils.currTimeUs();
 			long deltaUs = actualExecutionTimeUs - scheduledTimeUs;
 			
-			// Update offset: first trigger sets directly, then exponential convergence
-			if (isFirstTrigger)
-			{
-				offsetUs = deltaUs;
-				isFirstTrigger = false;
-			}
-			else
-			{
-				offsetUs = offsetUs + (deltaUs / ANTI_JITTER_FACTOR);
-			}
+			// Update offset with 4/3 step convergence
+			long oldOffsetUs = offsetUs;
+			long offsetDelta = (deltaUs * 4) / 3;
+			offsetUs = oldOffsetUs + offsetDelta;
 			
 			// Collect jitter metrics (debug builds only)
 			debug(EventJitter)
 			{
 				jitterMetrics.deltas ~= deltaUs;
+				// Record the actual offsetUs value (not a computation)
+				jitterMetrics.offsets ~= offsetUs;
 				jitterMetrics.minDelta = min(jitterMetrics.minDelta, deltaUs);
 				jitterMetrics.maxDelta = max(jitterMetrics.maxDelta, deltaUs);
 				jitterMetrics.sumDelta += deltaUs;
@@ -521,7 +486,7 @@ static class TriggerScheduler
 			}
 			
 			// Execute one trigger
-			processReady();
+			handleTrigger();
 		}
 	}
 }
