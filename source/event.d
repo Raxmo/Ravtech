@@ -205,9 +205,8 @@ debug(EventJitter)
 /**
  * IScheduler - Polymorphic interface for trigger scheduling
  * 
- * Different implementations provide different execution semantics:
- * - SchedulerLowRes: Fiber + system sleep (millisecond resolution, low CPU)
- * - SchedulerPolled: Synchronous polling (frame-rate resolution, zero async overhead)
+ * Supported implementations:
+ * - SchedulerLowRes: Async fiber + OS sleep (default)
  */
 interface IScheduler
 {
@@ -220,29 +219,34 @@ interface IScheduler
 	/// Remove a scheduled trigger from the timeline
 	void removeScheduledTrigger(ScheduledTrigger* node);
 	
-	/// Execute pending triggers (semantics depend on implementation)
-	void exec();
-	
 	/// Clear all pending triggers and reset state
 	void clear();
 }
 
 /**
- * SchedulerBase - Shared implementation for all scheduler variants
+ * SchedulerLowRes - Event scheduler with two execution modes
  * 
- * Provides:
- * - Trigger queue management (circular doubly-linked list)
- * - Jitter metrics collection (debug builds only)
- * - Insertion/removal operations
+ * MODE 1: Async fire-and-forget (via scheduleTrigger)
+ * - scheduleTrigger() spawns fiber on first trigger
+ * - Fiber sleeps until scheduled time, then executes
+ * - Automatic, caller just schedules and forgets
+ * - Resolution: Millisecond-level (~1ms, trades precision for CPU efficiency)
  * 
- * Subclasses override exec() to define execution strategy.
+ * MODE 2: Synchronous polling (via poll)
+ * - poll() executes all ready triggers synchronously
+ * - Caller invokes in game loop each frame
+ * - Frame-rate limited (16ms @ 60fps)
+ * - Zero async overhead, no fibers
+ * 
+ * QUEUE: Circular doubly-linked list sorted by executeTimeUs (O(1) ops)
+ * JITTER: Debug mode collects delta measurements (zero production overhead)
  */
-abstract class SchedulerBase : IScheduler
+class SchedulerLowRes : IScheduler
 {
 	protected ScheduledTrigger* head;
 	
 	/// Insert a node into sorted position (ascending by executeTimeUs)
-	protected void insertNodeSorted(ScheduledTrigger* node)
+	private void insertNodeSorted(ScheduledTrigger* node)
 	{
 		if (head == null)
 		{
@@ -282,6 +286,35 @@ abstract class SchedulerBase : IScheduler
 		}
 	}
 	
+	/// Schedule trigger for async execution (spawns fiber, fire-and-forget)
+	ScheduledTrigger* scheduleTrigger(ITrigger trigger, long executeTimeUs)
+	{
+		bool wasEmpty = (head == null);
+		
+		ScheduledTrigger* scheduled = new ScheduledTrigger();
+		scheduled.trigger = trigger;
+		scheduled.executeTimeUs = executeTimeUs;
+		scheduled.prev = null;
+		scheduled.next = null;
+		
+		insertNodeSorted(scheduled);
+		
+		// Spawn fiber if this was the first trigger
+		if (wasEmpty)
+		{
+			execAsync();
+		}
+		
+		return scheduled;
+	}
+	
+	/// Schedule trigger with relative delay from now
+	ScheduledTrigger* delayTrigger(ITrigger trigger, long delayUs)
+	{
+		long executeTimeUs = TimeUtils.currTimeUs() + delayUs;
+		return scheduleTrigger(trigger, executeTimeUs);
+	}
+	
 	/// Remove a scheduled trigger from the timeline
 	void removeScheduledTrigger(ScheduledTrigger* node)
 	{
@@ -310,14 +343,7 @@ abstract class SchedulerBase : IScheduler
 		destroy(node);
 	}
 	
-	/// Schedule trigger with relative delay from now
-	ScheduledTrigger* delayTrigger(ITrigger trigger, long delayUs)
-	{
-		long executeTimeUs = TimeUtils.currTimeUs() + delayUs;
-		return scheduleTrigger(trigger, executeTimeUs);
-	}
-	
-	/// Clear all pending triggers and reset jitter compensation state
+	/// Clear all pending triggers and reset state
 	void clear()
 	{
 		while (head != null)
@@ -326,46 +352,9 @@ abstract class SchedulerBase : IScheduler
 		}
 	}
 	
-	/// Execute pending triggers (polymorphic - subclasses define behavior)
-	abstract void exec();
-}
-
-/**
- * SchedulerLowRes - Low-resolution fiber-based scheduler with pure OS sleep
- * 
- * SEMANTICS:
- * - scheduleTrigger() spawns a fiber on first trigger
- * - Fiber uses OS sleep exclusively (no busy-spin) for energy efficiency
- * - exec() either spawns the fiber or returns immediately
- * 
- * PERFORMANCE:
- * - Resolution: Millisecond-level (~1ms granularity, trades resolution for CPU efficiency)
- * - CPU cost: Negligible during waits (sleeps entirely, no busy-spin)
- * - Deltas: ±450µs around zero, occasional 1-3ms spikes from OS scheduler
- */
-class SchedulerLowRes : SchedulerBase
-{
-	override ScheduledTrigger* scheduleTrigger(ITrigger trigger, long executeTimeUs)
-	{
-		bool wasEmpty = (head == null);
-		
-		ScheduledTrigger* scheduled = new ScheduledTrigger();
-		scheduled.trigger = trigger;
-		scheduled.executeTimeUs = executeTimeUs;
-		scheduled.prev = null;
-		scheduled.next = null;
-		
-		insertNodeSorted(scheduled);
-		
-		if (wasEmpty)
-		{
-			exec();
-		}
-		
-		return scheduled;
-	}
-	
-	override void exec()
+	/// Async fiber-based execution (spawns fiber, sleeps until time, executes)
+	/// Called automatically by scheduleTrigger() on first trigger
+	private void execAsync()
 	{
 		if (head != null)
 		{
@@ -406,37 +395,10 @@ class SchedulerLowRes : SchedulerBase
 			}).call();
 		}
 	}
-}
-
-/**
- * SchedulerPolled - Synchronous polling scheduler
- * 
- * SEMANTICS:
- * - scheduleTrigger() simply enqueues (no fiber spawning)
- * - exec() processes all ready triggers synchronously in caller's context
- * - Caller must invoke exec() regularly (each game loop frame)
- * 
- * PERFORMANCE:
- * - Precision: Frame-rate limited (16ms @ 60fps)
- * - CPU cost: Negligible (amortized into frame loop)
- * - Synchronous: No async overhead
- */
-class SchedulerPolled : SchedulerBase
-{
-	override ScheduledTrigger* scheduleTrigger(ITrigger trigger, long executeTimeUs)
-	{
-		ScheduledTrigger* scheduled = new ScheduledTrigger();
-		scheduled.trigger = trigger;
-		scheduled.executeTimeUs = executeTimeUs;
-		scheduled.prev = null;
-		scheduled.next = null;
-		
-		insertNodeSorted(scheduled);
-		return scheduled;
-	}
 	
-	/// Synchronously process all ready triggers
-	override void exec()
+	/// Poll for ready triggers synchronously (frame-aligned mode)
+	/// Call this once per frame in your game loop
+	void poll()
 	{
 		long currentTimeUs = TimeUtils.currTimeUs();
 		
