@@ -512,15 +512,15 @@ class SchedulerLowP : SchedulerBase
 		
 		while (head != null)
 		{
-			long executeTimeUs = TimeUtils.currTimeUs();
 			long scheduledTimeUs = head.executeTimeUs;
+			long executeTimeUs = TimeUtils.currTimeUs();
 			long delayUs = scheduledTimeUs - executeTimeUs;
 			
 			// Sleep for the full delay (OS sleep precision, no busy-spin)
 			// LowP accepts millisecond-level precision for negligible CPU cost
-			if (delayUs > 0)
+			long sleepMs = (delayUs + 999) / 1000;  // Round up to nearest millisecond
+			if (sleepMs > 0)
 			{
-				long sleepMs = (delayUs + 999) / 1000;  // Round up to nearest millisecond
 				Thread.sleep(dur!"msecs"(sleepMs));
 			}
 			
