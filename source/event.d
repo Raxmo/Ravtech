@@ -206,7 +206,6 @@ debug(EventJitter)
  * IScheduler - Polymorphic interface for trigger scheduling
  * 
  * Different implementations provide different execution semantics:
- * - SchedulerHighRes: Fiber + busy-spin (microsecond resolution, high CPU)
  * - SchedulerLowRes: Fiber + system sleep (millisecond resolution, low CPU)
  * - SchedulerPolled: Synchronous polling (frame-rate resolution, zero async overhead)
  */
@@ -329,91 +328,6 @@ abstract class SchedulerBase : IScheduler
 	
 	/// Execute pending triggers (polymorphic - subclasses define behavior)
 	abstract void exec();
-}
-
-/**
- * SchedulerHighRes - High-resolution fiber-based scheduler with busy-spin
- * 
- * SEMANTICS:
- * - scheduleTrigger() spawns a fiber on first trigger
- * - Fiber busy-spins for microsecond-level timing resolution
- * - exec() either spawns the fiber or returns immediately (depending on queue state)
- * 
- * PERFORMANCE:
- * - Resolution: Microsecond-level
- * - CPU cost: 100% during scheduled waits
- * - No jitter compensation: external noise is minimal and unpredictable
- */
-class SchedulerHighRes : SchedulerBase
-{
-	/**
-	 * Schedule a trigger for execution at an absolute time
-	 * 
-	 * Fire-and-forget API: caller enqueues, scheduler manages execution.
-	 * If queue was empty, spawns a fiber to run the scheduler loop.
-	 * Fiber executes all pending triggers, then exits.
-	 */
-	override ScheduledTrigger* scheduleTrigger(ITrigger trigger, long executeTimeUs)
-	{
-		bool wasEmpty = (head == null);
-		
-		ScheduledTrigger* scheduled = new ScheduledTrigger();
-		scheduled.trigger = trigger;
-		scheduled.executeTimeUs = executeTimeUs;
-		scheduled.prev = null;
-		scheduled.next = null;
-		
-		insertNodeSorted(scheduled);
-		
-		// Spawn fiber if pool was empty (became non-empty after insertion)
-		if (wasEmpty)
-		{
-			exec();
-		}
-		
-		return scheduled;
-	}
-	
-	/// Polymorphic exec - HighRes spawns fiber on empty queue
-	override void exec()
-	{
-		if (head != null)
-		{
-			Fiber schedulerFiber = new Fiber(() {
-				debug(EventJitter)
-				{
-					long fiberStart = TimeUtils.currTimeUs();
-					writeln("  [Fiber started at ", fiberStart, "µs]");
-				}
-				
-				while (head != null)
-				{
-					long scheduledTimeUs = head.executeTimeUs;
-					
-					// Yield to scheduled time (busy-spin for microsecond resolution)
-					while (TimeUtils.currTimeUs() < scheduledTimeUs) { }
-					
-					// Measure actual execution jitter (external system noise: GC, syscalls, etc.)
-					long deltaUs = TimeUtils.currTimeUs() - scheduledTimeUs;
-					
-					// Collect jitter metrics for observation (debug builds only)
-					debug(EventJitter)
-					{
-						jitterMetrics.deltas ~= deltaUs;
-						jitterMetrics.minDelta = min(jitterMetrics.minDelta, deltaUs);
-						jitterMetrics.maxDelta = max(jitterMetrics.maxDelta, deltaUs);
-						jitterMetrics.sumDelta += deltaUs;
-						jitterMetrics.triggersProcessed++;
-					}
-					
-					// Execute trigger and remove from queue
-					head.trigger.notify();
-					removeScheduledTrigger(head);
-				}
-			});
-			schedulerFiber.call();
-		}
-	}
 }
 
 /**

@@ -177,6 +177,38 @@ static class TimeUtils
 	{
 		return 1_000_000_000.0 / ticksPerSecond_;
 	}
+	
+	/**
+	 * High-resolution busy-wait until an absolute wall time
+	 * 
+	 * Performs a tight spin loop until the specified time is reached.
+	 * Achieves sub-microsecond precision on modern hardware.
+	 * 
+	 * USE CASES:
+	 * - Hardware synchronization requiring <5ms precision
+	 * - Real-time control systems with tight timing budgets
+	 * - Lab/test equipment requiring sample-accurate delays
+	 * - Low-level DSP code running within an audio callback
+	 * 
+	 * NOT suitable for:
+	 * - Game event scheduling (use SchedulerLowRes instead)
+	 * - MIDI playback timing (use SchedulerLowRes instead)
+	 * - Long delays >5ms (CPU inefficient, use Thread.sleep)
+	 * 
+	 * WARNING: Blocks the entire thread. Only use when you own the thread
+	 * and have no other work to do. Spinning for long durations burns CPU.
+	 * 
+	 * Params:
+	 *     absoluteTimeUs = Wall time to wait until (from currTimeUs())
+	 * 
+	 * Returns:
+	 *     Actual wait time in microseconds (execution time - target time)
+	 */
+	static long busyWaitUntil(long absoluteTimeUs)
+	{
+		while (currTimeUs() < absoluteTimeUs) { }
+		return currTimeUs() - absoluteTimeUs;
+	}
 }
 
 /**
