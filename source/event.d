@@ -518,7 +518,7 @@ class SchedulerLowP : SchedulerBase
 			
 			// Sleep for the full delay (OS sleep precision, no busy-spin)
 			// LowP accepts millisecond-level precision for negligible CPU cost
-			long sleepMs = (delayUs + 999) / 1000;  // Round up to nearest millisecond
+			long sleepMs = (delayUs + 500) / 1000;  // Round to nearest millisecond
 			if (sleepMs > 0)
 			{
 				Thread.sleep(dur!"msecs"(sleepMs));
