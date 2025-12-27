@@ -365,51 +365,50 @@ class Scheduler
 					break;
 				
 				currentNode = head;
-				delayUs = head.executeTimeUs - TimeUtils.currTimeUs();
-			}
-			
-			// If trigger not ready yet, wait/sleep
-			if (delayUs > 0)
-			{
-				// Use a small sleep loop instead of Condition.wait to avoid race conditions
-				long sleepIntervalMs = 1;
-				long timeElapsedUs = 0;
-				while (timeElapsedUs < delayUs && running)
+				long nowUs = TimeUtils.currTimeUs();
+				delayUs = head.executeTimeUs - nowUs;
+				
+				// If trigger is ready now, don't wait
+				if (delayUs <= 0)
 				{
-					long startUs = TimeUtils.currTimeUs();
-					import core.thread;
-					Thread.sleep(msecs(sleepIntervalMs));
-					timeElapsedUs += TimeUtils.currTimeUs() - startUs;
+					// Time arrived, execute trigger immediately (still holding lock)
+					debug(EventJitter)
+					{
+						long deltaUs = TimeUtils.currTimeUs() - currentNode.executeTimeUs;
+						jitterMetrics.deltas ~= deltaUs;
+						jitterMetrics.minDelta = min(jitterMetrics.minDelta, deltaUs);
+						jitterMetrics.maxDelta = max(jitterMetrics.maxDelta, deltaUs);
+						jitterMetrics.sumDelta += deltaUs;
+						jitterMetrics.triggersProcessed++;
+					}
+					
+					ITrigger triggerToExecute = currentNode.trigger;
+					removeScheduledTriggerUnsafe(currentNode);
+					
+					// Release lock and execute (avoid deadlock if notify() schedules)
+					queueMutex.unlock();
+					triggerToExecute.notify();
+					queueMutex.lock();
+					continue;
 				}
+				
+				// Not ready yet - will wait on condition variable below
 			}
 			
-			// After waking, verify node is still in queue before executing
+			// Trigger not ready, wait on condition with timeout
+			// Cap at 1 second to ensure responsiveness to stop() signal
+			long waitMs = min(1000, (delayUs + 500) / 1000);
 			synchronized (queueMutex)
 			{
-				// If node was removed while we slept, skip to next
-				if (head == null || currentNode != head)
-					continue;
+				// Re-check queue state before waiting (might have changed)
+				if (head == null)
+					break;
 				
-				// Time arrived, execute trigger
-				debug(EventJitter)
-				{
-					// Measure actual execution jitter (external system noise)
-					long deltaUs = TimeUtils.currTimeUs() - currentNode.executeTimeUs;
-					jitterMetrics.deltas ~= deltaUs;
-					jitterMetrics.minDelta = min(jitterMetrics.minDelta, deltaUs);
-					jitterMetrics.maxDelta = max(jitterMetrics.maxDelta, deltaUs);
-					jitterMetrics.sumDelta += deltaUs;
-					jitterMetrics.triggersProcessed++;
+				try {
+					triggerReady.wait(dur!"msecs"(waitMs));
+				} catch (Exception e) {
+					// Timeout is normal, not an error - just continue loop
 				}
-				
-				// Capture trigger before removing node
-				ITrigger triggerToExecute = currentNode.trigger;
-				removeScheduledTriggerUnsafe(currentNode);
-				
-				// Release lock and execute (avoid deadlock if notify() schedules)
-				queueMutex.unlock();
-				triggerToExecute.notify();
-				queueMutex.lock();
 			}
 		}
 	}

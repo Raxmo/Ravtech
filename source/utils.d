@@ -118,32 +118,27 @@ class Random
  */
 static class TimeUtils
 {
-	private static long ticksPerSecond_;
-	private static long ticksPerMicrosecond_;
-	private static bool initialized_ = false;
+	private __gshared long ticksPerSecond_;
+	private __gshared long ticksPerMicrosecond_;
 	
 	shared static this()
 	{
 		ticksPerSecond_ = MonoTime.ticksPerSecond();
 		ticksPerMicrosecond_ = ticksPerSecond_ / 1_000_000;
+		// Ensure we never divide by zero - ticksPerSecond_ should always be >= 1M
+		// on modern systems, but be defensive
 		if (ticksPerMicrosecond_ == 0)
-			ticksPerMicrosecond_ = 1;  // Fallback to avoid division by zero
-		initialized_ = true;
+			ticksPerMicrosecond_ = 1;
 	}
 	
 	/**
 	 * Get current time in microseconds
+	 * Thread-safe: uses __gshared members initialized in shared static this()
 	 */
 	static long currTimeUs()
 	{
-		if (!initialized_)
-		{
-			ticksPerSecond_ = MonoTime.ticksPerSecond();
-			ticksPerMicrosecond_ = ticksPerSecond_ / 1_000_000;
-			if (ticksPerMicrosecond_ == 0)
-				ticksPerMicrosecond_ = 1;
-			initialized_ = true;
-		}
+		// ticksPerMicrosecond_ is set once in shared static this() and never modified
+		// __gshared ensures it's visible to all threads
 		return MonoTime.currTime().ticks() / ticksPerMicrosecond_;
 	}
 	
