@@ -384,7 +384,7 @@ class SchedulerHighRes : SchedulerBase
 		return scheduleTrigger(trigger, executeTimeUs);
 	}
 	
-	/// Polymorphic exec - HighP spawns fiber on empty queue
+	/// Polymorphic exec - HighRes spawns fiber on empty queue
 	override void exec()
 	{
 		if (head != null)
@@ -409,8 +409,8 @@ class SchedulerHighRes : SchedulerBase
 		{
 			long scheduledTimeUs = head.executeTimeUs;
 			
-			// Yield to scheduled time (busy-spin for microsecond precision)
-			yieldUntilHighP(scheduledTimeUs);
+			// Yield to scheduled time (busy-spin for microsecond resolution)
+			yieldUntilHighRes(scheduledTimeUs);
 			
 			// Measure actual execution jitter (external system noise: GC, syscalls, etc.)
 			long deltaUs = TimeUtils.currTimeUs() - scheduledTimeUs;
@@ -430,8 +430,8 @@ class SchedulerHighRes : SchedulerBase
 		}
 	}
 	
-	/// Busy-spin yield until absolute target time (microsecond precision)
-	private void yieldUntilHighP(long targetTimeUs)
+	/// Busy-spin yield until absolute target time (microsecond resolution)
+	private void yieldUntilHighRes(long targetTimeUs)
 	{
 		while (TimeUtils.currTimeUs() < targetTimeUs) { }
 	}
@@ -507,7 +507,7 @@ class SchedulerLowRes : SchedulerBase
 		debug(EventJitter)
 		{
 			long fiberStart = TimeUtils.currTimeUs();
-			writeln("  [LowP Fiber started at ", fiberStart, "µs]");
+			writeln("  [LowRes Fiber started at ", fiberStart, "µs]");
 		}
 		
 		while (head != null)
@@ -516,8 +516,8 @@ class SchedulerLowRes : SchedulerBase
 			long executeTimeUs = TimeUtils.currTimeUs();
 			long delayUs = scheduledTimeUs - executeTimeUs;
 			
-			// Sleep for the full delay (OS sleep precision, no busy-spin)
-			// LowP accepts millisecond-level precision for negligible CPU cost
+			// Sleep for the full delay (OS sleep resolution, no busy-spin)
+			// LowRes accepts millisecond-level resolution for negligible CPU cost
 			long sleepMs = (delayUs + 500) / 1000;  // Round to nearest millisecond
 			if (sleepMs > 0)
 			{
