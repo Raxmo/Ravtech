@@ -248,6 +248,7 @@ interface IScheduler
 class SchedulerLowRes : IScheduler
 {
 	protected ScheduledTrigger* head;
+	private Fiber schedulerFiber;
 	
 	/// Insert a node into sorted position (ascending by executeTimeUs)
 	private void insertNodeSorted(ScheduledTrigger* node)
@@ -290,9 +291,11 @@ class SchedulerLowRes : IScheduler
 		}
 	}
 	
-	/// Schedule trigger for execution (enqueue and execute ready triggers)
+	/// Schedule trigger for async execution via fiber
 	ScheduledTrigger* scheduleTrigger(ITrigger trigger, long executeTimeUs)
 	{
+		bool wasEmpty = (head == null);
+		
 		ScheduledTrigger* scheduled = new ScheduledTrigger();
 		scheduled.trigger = trigger;
 		scheduled.executeTimeUs = executeTimeUs;
@@ -301,9 +304,19 @@ class SchedulerLowRes : IScheduler
 		
 		insertNodeSorted(scheduled);
 		
-		// Execute all ready triggers immediately
-		executeReady();
+		// Spawn fiber on first trigger
+		if (wasEmpty)
+		{
+			schedulerFiber = new Fiber(&executionLoop);
+			schedulerFiber.call();  // Start fiber
+		}
+		// Resume fiber if it's yielded
+		else if (schedulerFiber && schedulerFiber.state == Fiber.State.HOLD)
+		{
+			schedulerFiber.call();  // Resume fiber
+		}
 		
+		// Return immediately (non-blocking)
 		return scheduled;
 	}
 	
@@ -351,35 +364,45 @@ class SchedulerLowRes : IScheduler
 		}
 	}
 	
-	/// Execute all ready triggers (sleep if future-scheduled)
-	private void executeReady()
+	/// Fiber execution loop - runs in scheduler fiber, yields to main thread
+	private void executionLoop()
 	{
 		while (head != null)
 		{
 			long delayUs = head.executeTimeUs - TimeUtils.currTimeUs();
 			
-			// Sleep for the full delay (OS sleep resolution, no busy-spin)
-			// LowRes accepts millisecond-level resolution for negligible CPU cost
-			long sleepMs = (delayUs + 500) / 1000;  // Round to nearest millisecond
-			if (sleepMs > 0)
+			// If trigger not ready yet
+			if (delayUs > 0)
 			{
+				// Sleep fiber until approximately that time
+				long sleepMs = (delayUs + 500) / 1000;  // Round to nearest millisecond
 				Thread.sleep(dur!"msecs"(sleepMs));
+				
+				// Yield control back to main thread
+				Fiber.yield();
+				// Main thread continues...
+				// When main calls scheduleTrigger() again, fiber resumes here
 			}
-			
-			debug(EventJitter)
+			else
 			{
-				// Measure actual execution jitter (external system noise)
-				long deltaUs = TimeUtils.currTimeUs() - head.executeTimeUs;
-				jitterMetrics.deltas ~= deltaUs;
-				jitterMetrics.minDelta = min(jitterMetrics.minDelta, deltaUs);
-				jitterMetrics.maxDelta = max(jitterMetrics.maxDelta, deltaUs);
-				jitterMetrics.sumDelta += deltaUs;
-				jitterMetrics.triggersProcessed++;
+				// Time arrived, execute trigger
+				debug(EventJitter)
+				{
+					// Measure actual execution jitter (external system noise)
+					long deltaUs = TimeUtils.currTimeUs() - head.executeTimeUs;
+					jitterMetrics.deltas ~= deltaUs;
+					jitterMetrics.minDelta = min(jitterMetrics.minDelta, deltaUs);
+					jitterMetrics.maxDelta = max(jitterMetrics.maxDelta, deltaUs);
+					jitterMetrics.sumDelta += deltaUs;
+					jitterMetrics.triggersProcessed++;
+				}
+				
+				// Execute trigger and remove from queue
+				head.trigger.notify();
+				removeScheduledTrigger(head);
+				
+				// Loop continues to check next trigger
 			}
-			
-			// Execute trigger and remove from queue
-			head.trigger.notify();
-			removeScheduledTrigger(head);
 		}
 	}
 	
