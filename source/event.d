@@ -395,19 +395,21 @@ class Scheduler
 				// Not ready yet - will wait on condition variable below
 			}
 			
-			// Trigger not ready, wait on condition with timeout
-			// Cap at 1 second to ensure responsiveness to stop() signal
-			long waitMs = min(1000, (delayUs + 500) / 1000);
+			// Trigger not ready, wait on condition variable until it executes
+			// When stop() is called, it signals triggerReady to wake us up
 			synchronized (queueMutex)
 			{
 				// Re-check queue state before waiting (might have changed)
 				if (head == null)
 					break;
 				
+				// Wait for the trigger time or stop() signal (whichever comes first)
+				// timeout = full delay to next trigger
+				long waitMs = (delayUs + 500) / 1000;
 				try {
 					triggerReady.wait(dur!"msecs"(waitMs));
 				} catch (Exception e) {
-					// Timeout is normal, not an error - just continue loop
+					// Timeout is normal, not an error - continue loop to check trigger time
 				}
 			}
 		}
