@@ -1,5 +1,7 @@
 import core.thread;
 import core.time;
+import core.sync.mutex;
+import core.sync.condition;
 import std.stdio;
 import std.algorithm;
 import utils;
@@ -17,8 +19,6 @@ interface ITrigger
 	/// Execute the trigger, notifying its linked event with stored payload
 	void notify();
 }
-
-
 
 /**
  * Listener - Wrapper for a delegate and its index
@@ -53,6 +53,7 @@ class Event(T)
 	
 	this()
 	{
+		listeners = [];
 	}
 	
 	/**
@@ -155,8 +156,6 @@ class Trigger(T) : ITrigger
 	@property Event!T event() { return _targetEvent; }
 }
 
-
-
 /**
  * ScheduledTrigger - Instance of a trigger scheduled for execution
  * 
@@ -203,52 +202,37 @@ debug(EventJitter)
 }
 
 /**
- * IScheduler - Polymorphic interface for trigger scheduling
+ * Scheduler - Event trigger scheduler with dual execution modes
  * 
- * Supported implementations:
- * - SchedulerLowRes: Async fiber + OS sleep (default)
- */
-interface IScheduler
-{
-	/// Schedule trigger for absolute execution time
-	ScheduledTrigger* scheduleTrigger(ITrigger trigger, long executeTimeUs);
-	
-	/// Schedule trigger with relative delay from now
-	ScheduledTrigger* delayTrigger(ITrigger trigger, long delayUs);
-	
-	/// Remove a scheduled trigger from the timeline
-	void removeScheduledTrigger(ScheduledTrigger* node);
-	
-	/// Clear all pending triggers and reset state
-	void clear();
-}
-
-/**
- * SchedulerLowRes - Event scheduler with sleeping sleep-and-execute semantics
+ * Two independent execution paths:
+ * 1. Synchronous polling (poll):
+ *    - Caller invokes poll() each frame
+ *    - Executes only ready triggers (no sleeping)
+ *    - Frame-aligned, zero async overhead
  * 
- * DESIGN: Synchronous execution with OS sleep (no fibers, no async)
- * - scheduleTrigger() enqueues trigger and executes all ready ones immediately
- * - Sleeps (blocks thread) until each trigger's scheduled time arrives
- * - poll() executes ready triggers without sleeping (frame-aligned mode)
+ * 2. Asynchronous background thread (exec):
+ *    - Caller invokes exec() to start background thread
+ *    - Thread sleeps until trigger time, executes
+ *    - Fire-and-forget, main thread continues
+ *    - scheduleTrigger() just enqueues (non-blocking)
  * 
- * EXECUTION MODES:
- * 1. Blocking sleep (scheduleTrigger):
- *    - Thread.sleep() until scheduled time
- *    - Blocking but CPU-efficient (OS scheduler handles sleep)
- *    - Resolution: Millisecond-level (~1ms from rounding)
- * 
- * 2. Frame polling (poll):
- *    - Executes only ready triggers (no sleep)
- *    - Caller invokes once per frame
- *    - Zero sleep overhead, frame-rate limited
  * 
  * QUEUE: Circular doubly-linked list sorted by executeTimeUs (O(1) ops)
  * JITTER: Debug mode collects delta measurements (zero production overhead)
  */
-class SchedulerLowRes : IScheduler
+class Scheduler
 {
 	protected ScheduledTrigger* head;
-	private Fiber schedulerFiber;
+	private Thread schedulerThread;
+	private bool running = true;
+	private Mutex queueMutex;
+	private Condition triggerReady;
+	
+	this()
+	{
+		queueMutex = new Mutex();
+		triggerReady = new Condition(queueMutex);
+	}
 	
 	/// Insert a node into sorted position (ascending by executeTimeUs)
 	private void insertNodeSorted(ScheduledTrigger* node)
@@ -262,61 +246,50 @@ class SchedulerLowRes : IScheduler
 			return;
 		}
 		
-		// Walk backwards from tail, comparing with new node's executeTime
-		ScheduledTrigger* pos = head.prev;  // Start at tail
+		// Walk backwards from tail until we find insertion point
+		ScheduledTrigger* position = head.prev;  // Start at tail
+		do {
+			if (position.executeTimeUs <= node.executeTimeUs)
+			{
+				// Insert after this position
+				node.next = position.next;
+				node.prev = position;
+				position.next.prev = node;
+				position.next = node;
+				return;
+			}
+			position = position.prev;  // Step backwards
+		} while (position != head.prev);  // Stop when we loop back to tail
 		
-		// Find insertion point: first node with executeTimeUs <= new node's time
-		while (pos != head && pos.executeTimeUs > node.executeTimeUs)
-		{
-			pos = pos.prev;
-		}
-		
-		// Now pos is either head (new node should be first) or a node with executeTimeUs <= new node's time
-		if (pos == head && head.executeTimeUs > node.executeTimeUs)
-		{
-			// New node is earliest, insert before head
-			node.next = head;
-			node.prev = head.prev;
-			head.prev.next = node;
-			head.prev = node;
-			head = node;  // New head
-		}
-		else
-		{
-			// Insert after pos
-			node.next = pos.next;
-			node.prev = pos;
-			pos.next.prev = node;
-			pos.next = node;
-		}
+		// If we get here, node belongs at head
+		node.next = head;
+		node.prev = head.prev;
+		head.prev.next = node;
+		head.prev = node;
+		head = node;
 	}
 	
-	/// Schedule trigger for async execution via fiber
+	/// Schedule trigger for execution (enqueue only)
 	ScheduledTrigger* scheduleTrigger(ITrigger trigger, long executeTimeUs)
 	{
-		bool wasEmpty = (head == null);
-		
 		ScheduledTrigger* scheduled = new ScheduledTrigger();
 		scheduled.trigger = trigger;
 		scheduled.executeTimeUs = executeTimeUs;
 		scheduled.prev = null;
 		scheduled.next = null;
 		
-		insertNodeSorted(scheduled);
-		
-		// Spawn fiber on first trigger
-		if (wasEmpty)
+		synchronized (queueMutex)
 		{
-			schedulerFiber = new Fiber(&executionLoop);
-			schedulerFiber.call();  // Start fiber
-		}
-		// Resume fiber if it's yielded
-		else if (schedulerFiber && schedulerFiber.state == Fiber.State.HOLD)
-		{
-			schedulerFiber.call();  // Resume fiber
+			ScheduledTrigger* oldHead = head;
+			insertNodeSorted(scheduled);
+			
+			// If this node became the new head, wake background thread
+			if (head == scheduled && oldHead != scheduled)
+			{
+				triggerReady.notify();
+			}
 		}
 		
-		// Return immediately (non-blocking)
 		return scheduled;
 	}
 	
@@ -328,9 +301,8 @@ class SchedulerLowRes : IScheduler
 	}
 	
 	
-  // Will probably have to return to this later as it is likely mallformed now.
-  /// Remove a scheduled trigger from the timeline
-	void removeScheduledTrigger(ScheduledTrigger* node)
+	/// Remove a scheduled trigger from the timeline (must be called with queueMutex held)
+	private void removeScheduledTriggerUnsafe(ScheduledTrigger* node)
 	{
 		if (node == null || head == null)
 			return;
@@ -357,37 +329,72 @@ class SchedulerLowRes : IScheduler
 		destroy(node);
 	}
 	
-	/// Clear all pending triggers and reset state
-	void clear()
+	/// Remove a scheduled trigger from the timeline (thread-safe)
+	void removeScheduledTrigger(ScheduledTrigger* node)
 	{
-		while (head != null)
+		synchronized (queueMutex)
 		{
-			removeScheduledTrigger(head);
+			removeScheduledTriggerUnsafe(node);
 		}
 	}
 	
-	/// Fiber execution loop - runs in scheduler fiber, yields to main thread
-	private void executionLoop()
+	/// Clear all pending triggers and reset state
+	void clear()
 	{
-		while (head != null)
+		synchronized (queueMutex)
 		{
-			long delayUs = head.executeTimeUs - TimeUtils.currTimeUs();
+			while (head != null)
+			{
+				removeScheduledTriggerUnsafe(head);
+			}
+		}
+	}
+	
+	/// Background thread loop - sleeps until trigger time, executes when ready
+	private void backgroundLoop()
+	{
+		while (running)
+		{
+			ScheduledTrigger* currentNode;
+			long delayUs;
 			
-			// If trigger not ready yet
+			// Lock to check queue and read execution time
+			synchronized (queueMutex)
+			{
+				if (head == null)
+					break;
+				
+				currentNode = head;
+				delayUs = head.executeTimeUs - TimeUtils.currTimeUs();
+			}
+			
+			// If trigger not ready yet, wait/sleep
 			if (delayUs > 0)
 			{
-				// Yield control back to main thread (don't block)
-				Fiber.yield();
-				// Main thread continues...
-				// When main calls scheduleTrigger() again, fiber resumes here
+				// Use a small sleep loop instead of Condition.wait to avoid race conditions
+				long sleepIntervalMs = 1;
+				long timeElapsedUs = 0;
+				while (timeElapsedUs < delayUs && running)
+				{
+					long startUs = TimeUtils.currTimeUs();
+					import core.thread;
+					Thread.sleep(msecs(sleepIntervalMs));
+					timeElapsedUs += TimeUtils.currTimeUs() - startUs;
+				}
 			}
-			else
+			
+			// After waking, verify node is still in queue before executing
+			synchronized (queueMutex)
 			{
+				// If node was removed while we slept, skip to next
+				if (head == null || currentNode != head)
+					continue;
+				
 				// Time arrived, execute trigger
 				debug(EventJitter)
 				{
 					// Measure actual execution jitter (external system noise)
-					long deltaUs = TimeUtils.currTimeUs() - head.executeTimeUs;
+					long deltaUs = TimeUtils.currTimeUs() - currentNode.executeTimeUs;
 					jitterMetrics.deltas ~= deltaUs;
 					jitterMetrics.minDelta = min(jitterMetrics.minDelta, deltaUs);
 					jitterMetrics.maxDelta = max(jitterMetrics.maxDelta, deltaUs);
@@ -395,25 +402,73 @@ class SchedulerLowRes : IScheduler
 					jitterMetrics.triggersProcessed++;
 				}
 				
-				// Execute trigger and remove from queue
-				head.trigger.notify();
-				removeScheduledTrigger(head);
+				// Capture trigger before removing node
+				ITrigger triggerToExecute = currentNode.trigger;
+				removeScheduledTriggerUnsafe(currentNode);
 				
-				// Loop continues to check next trigger
+				// Release lock and execute (avoid deadlock if notify() schedules)
+				queueMutex.unlock();
+				triggerToExecute.notify();
+				queueMutex.lock();
 			}
 		}
 	}
 	
-	/// Poll for ready triggers synchronously (frame-aligned mode)
+	/// Poll for ready triggers synchronously (frame-aligned polling mode)
 	/// Call this once per frame in your game loop
 	void poll()
 	{
 		long currentTimeUs = TimeUtils.currTimeUs();
 		
-		while (head != null && head.executeTimeUs <= currentTimeUs)
+		while (true)
 		{
-			head.trigger.notify();
-			removeScheduledTrigger(head);
+			ScheduledTrigger* currentNode;
+			
+			// Lock to check if next trigger is ready
+			synchronized (queueMutex)
+			{
+				if (head == null || head.executeTimeUs > currentTimeUs)
+					break;
+				
+				currentNode = head;
+			}
+			
+			// Execute trigger outside lock (avoid deadlock)
+			currentNode.trigger.notify();
+			
+			// Remove from queue with lock held
+			synchronized (queueMutex)
+			{
+				removeScheduledTriggerUnsafe(currentNode);
+			}
+		}
+	}
+	
+	/// Execute pending triggers asynchronously (background thread mode)
+	void exec()
+	{
+		// Spawn/maintain background thread if not already running
+		if (schedulerThread is null || !schedulerThread.isRunning)
+		{
+			schedulerThread = new Thread(&backgroundLoop);
+			schedulerThread.isDaemon = true;
+			schedulerThread.start();
+		}
+	}
+	
+	/// Stop the background thread cleanly (must be called after exec() before test cleanup)
+	void stop()
+	{
+		synchronized (queueMutex)
+		{
+			running = false;
+			triggerReady.notifyAll();  // Wake thread in case it's sleeping
+		}
+		
+		// Wait for thread to complete
+		if (schedulerThread !is null && schedulerThread.isRunning)
+		{
+			schedulerThread.join();
 		}
 	}
 }

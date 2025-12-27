@@ -120,11 +120,15 @@ static class TimeUtils
 {
 	private static long ticksPerSecond_;
 	private static long ticksPerMicrosecond_;
+	private static bool initialized_ = false;
 	
 	shared static this()
 	{
 		ticksPerSecond_ = MonoTime.ticksPerSecond();
 		ticksPerMicrosecond_ = ticksPerSecond_ / 1_000_000;
+		if (ticksPerMicrosecond_ == 0)
+			ticksPerMicrosecond_ = 1;  // Fallback to avoid division by zero
+		initialized_ = true;
 	}
 	
 	/**
@@ -132,6 +136,14 @@ static class TimeUtils
 	 */
 	static long currTimeUs()
 	{
+		if (!initialized_)
+		{
+			ticksPerSecond_ = MonoTime.ticksPerSecond();
+			ticksPerMicrosecond_ = ticksPerSecond_ / 1_000_000;
+			if (ticksPerMicrosecond_ == 0)
+				ticksPerMicrosecond_ = 1;
+			initialized_ = true;
+		}
 		return MonoTime.currTime().ticks() / ticksPerMicrosecond_;
 	}
 	
